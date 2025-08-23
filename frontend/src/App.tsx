@@ -42,6 +42,7 @@ function App() {
   const [playerName, setPlayerName] = useState('')
   const [isRolling, setIsRolling] = useState(false)
   const [selectedCrop, setSelectedCrop] = useState<'carrot' | 'tomato' | 'corn' | 'wheat'>('carrot')
+  const [eventMessages, setEventMessages] = useState<string[]>([])
 
   const createGame = async () => {
     if (!playerName.trim()) return
@@ -53,6 +54,7 @@ function App() {
       const data = await response.json()
       setGameId(data.game_id)
       setGameState(data.game_state)
+      setEventMessages([])
     } catch (error) {
       console.error('Failed to create game:', error)
     }
@@ -68,6 +70,7 @@ function App() {
       })
       const data = await response.json()
       setGameState(data.game_state)
+      setEventMessages(data.events || [])
     } catch (error) {
       console.error('Failed to roll dice:', error)
     } finally {
@@ -177,22 +180,33 @@ function App() {
           </div>
         </div>
 
+        <div className="mb-4 text-center space-y-1">
+          {eventMessages.map((msg, idx) => (
+            <div key={idx} className="text-sm text-gray-700">{msg}</div>
+          ))}
+        </div>
+
         <div className="grid grid-cols-10 gap-2 mb-6 p-4 bg-white rounded-lg shadow-lg">
           {gameState.board.map((square, index) => (
             <div
               key={square.id}
               className={`
                 relative aspect-square border-2 rounded-lg p-2 flex flex-col items-center justify-center
-                ${currentPlayer.position === index ? 'border-blue-500 bg-blue-100' : 'border-gray-300 bg-white'}
-                ${square.crop ? 'bg-green-50' : ''}
+                border-gray-300
+                ${square.crop ? 'bg-green-50' : 'bg-white'}
               `}
             >
               <div className="text-xs font-bold mb-1">{index}</div>
-              {currentPlayer.position === index && (
-                <div className="absolute -top-2 -right-2 w-6 h-6 bg-blue-500 rounded-full flex items-center justify-center text-white text-xs font-bold">
-                  P
-                </div>
-              )}
+              {gameState.players.map((player, idx) => (
+                player.position === index && (
+                  <div
+                    key={player.id}
+                    className={`absolute -top-2 ${idx === 0 ? '-left-2 bg-blue-500' : '-right-2 bg-red-500'} w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-bold`}
+                  >
+                    {idx === 0 ? 'P1' : 'B'}
+                  </div>
+                )
+              ))}
               {square.crop && (
                 <div className="flex flex-col items-center">
                   {getCropIcon(square.crop.type)}
