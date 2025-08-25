@@ -16,6 +16,7 @@ interface Square {
   id: number
   crop?: Crop
   owner?: string
+  is_stock_exchange?: boolean
 }
 
 interface Player {
@@ -24,6 +25,7 @@ interface Player {
   position: number
   coins: number
   crops_harvested: number
+  stocks?: Record<string, number>
 }
 
 interface GameState {
@@ -32,6 +34,7 @@ interface GameState {
   board: Square[]
   turn: number
   dice_value?: number
+  stocks: Record<string, number>
 }
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
@@ -42,6 +45,9 @@ function App() {
   const [playerName, setPlayerName] = useState('')
   const [isRolling, setIsRolling] = useState(false)
   const [selectedCrop, setSelectedCrop] = useState<'carrot' | 'tomato' | 'corn' | 'wheat'>('carrot')
+  const [eventMessages, setEventMessages] = useState<string[]>([])
+  const [showStocks, setShowStocks] = useState(false)
+  const [displayedDice, setDisplayedDice] = useState<number | null>(null)
 
   const createGame = async () => {
     if (!playerName.trim()) return
@@ -53,6 +59,7 @@ function App() {
       const data = await response.json()
       setGameId(data.game_id)
       setGameState(data.game_state)
+      setEventMessages([])
     } catch (error) {
       console.error('Failed to create game:', error)
     }
@@ -60,14 +67,28 @@ function App() {
 
   const rollDice = async () => {
     if (!gameId || isRolling) return
-    
+
     setIsRolling(true)
     try {
       const response = await fetch(`${API_BASE}/game/${gameId}/roll-dice`, {
         method: 'POST'
       })
       const data = await response.json()
+      setEventMessages(data.events || [])
+
+      const interval = setInterval(() => {
+        setDisplayedDice(Math.floor(Math.random() * 6) + 1)
+      }, 100)
+      await new Promise((res) => setTimeout(res, 1000))
+      clearInterval(interval)
+
+      setDisplayedDice(data.dice_value)
       setGameState(data.game_state)
+
+      const nextPlayer = data.game_state.players[data.game_state.current_player]
+      if (nextPlayer.id === 'bot') {
+        setTimeout(() => rollDice(), 1000)
+      }
     } catch (error) {
       console.error('Failed to roll dice:', error)
     } finally {
@@ -103,6 +124,19 @@ function App() {
     }
   }
 
+  const buyStock = async (stock: string) => {
+    if (!gameId) return
+    try {
+      const response = await fetch(`${API_BASE}/game/${gameId}/buy-stock?stock_name=${stock}`, {
+        method: 'POST'
+      })
+      const data = await response.json()
+      setGameState(data.game_state)
+    } catch (error) {
+      console.error('Failed to buy stock:', error)
+    }
+  }
+
   const getDiceIcon = (value: number) => {
     const icons = [Dice1, Dice2, Dice3, Dice4, Dice5, Dice6]
     const Icon = icons[value - 1]
@@ -119,12 +153,17 @@ function App() {
     }
   }
 
-  const getCropStageColor = (stage: string) => {
+  const getCropStageColor = (stage: string, owner?: string) => {
+    const ownerBorder = owner === 'player1' ? 'border-blue-500' : owner === 'bot' ? 'border-red-500' : 'border-gray-300'
     switch (stage) {
-      case 'planted': return 'bg-brown-200 text-brown-800'
-      case 'growing': return 'bg-green-200 text-green-800'
-      case 'ready': return 'bg-yellow-200 text-yellow-800'
-      default: return 'bg-gray-200 text-gray-800'
+      case 'planted':
+        return `bg-gray-300 text-gray-800 ${ownerBorder}`
+      case 'growing':
+        return `bg-green-500 text-white ${ownerBorder}`
+      case 'ready':
+        return `bg-yellow-500 text-white ${ownerBorder}`
+      default:
+        return `bg-gray-200 text-gray-800 ${ownerBorder}`
     }
   }
 
@@ -177,26 +216,63 @@ function App() {
           </div>
         </div>
 
+        <div className="mb-4 text-center space-y-1">
+          {eventMessages.map((msg, idx) => (
+            <div key={idx} className="text-sm text-gray-700">{msg}</div>
+          ))}
+        </div>
+
+        <div className="mb-4 text-center">
+          <Button onClick={() => setShowStocks(!showStocks)} className="mb-2">
+            {showStocks ? '株価ボードを閉じる' : '株価ボードを見る'}
+          </Button>
+          {showStocks && (
+            <Card className="max-w-md mx-auto">
+              <CardHeader>
+                <CardTitle>株価ボード</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {Object.entries(gameState.stocks).map(([name, price]) => (
+                  <div key={name} className="flex justify-between mb-2">
+                    <span>{name}</span>
+                    <span>
+                      {price} コイン (保有: {currentPlayer.stocks?.[name] || 0})
+                    </span>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
+        </div>
+
         <div className="grid grid-cols-10 gap-2 mb-6 p-4 bg-white rounded-lg shadow-lg">
           {gameState.board.map((square, index) => (
             <div
               key={square.id}
               className={`
                 relative aspect-square border-2 rounded-lg p-2 flex flex-col items-center justify-center
-                ${currentPlayer.position === index ? 'border-blue-500 bg-blue-100' : 'border-gray-300 bg-white'}
-                ${square.crop ? 'bg-green-50' : ''}
+                ${square.owner === 'player1' ? 'border-blue-500' : square.owner === 'bot' ? 'border-red-500' : 'border-gray-300'}
+                ${square.is_stock_exchange ? 'bg-purple-50' : square.crop ? 'bg-green-50' : 'bg-white'}
               `}
             >
               <div className="text-xs font-bold mb-1">{index}</div>
-              {currentPlayer.position === index && (
-                <div className="absolute -top-2 -right-2 w-6 h-6 bg-blue-500 rounded-full flex items-center justify-center text-white text-xs font-bold">
-                  P
-                </div>
+              {gameState.players.map((player, idx) => (
+                player.position === index && (
+                  <div
+                    key={player.id}
+                    className={`absolute -top-2 ${idx === 0 ? '-left-2 bg-blue-500' : '-right-2 bg-red-500'} w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-bold`}
+                  >
+                    {idx === 0 ? 'P1' : 'B'}
+                  </div>
+                )
+              ))}
+              {square.is_stock_exchange && (
+                <span className="text-xs text-purple-700">株</span>
               )}
               {square.crop && (
                 <div className="flex flex-col items-center">
                   {getCropIcon(square.crop.type)}
-                  <Badge className={`text-xs mt-1 ${getCropStageColor(square.crop.stage)}`}>
+                  <Badge className={`text-xs mt-1 ${getCropStageColor(square.crop.stage, square.owner)}`}>
                     {square.crop.stage}
                   </Badge>
                 </div>
@@ -211,10 +287,10 @@ function App() {
               <CardTitle>サイコロ</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              {gameState.dice_value && (
+              {displayedDice && (
                 <div className="flex items-center justify-center">
-                  {getDiceIcon(gameState.dice_value)}
-                  <span className="ml-2 text-xl font-bold">{gameState.dice_value}</span>
+                  {getDiceIcon(displayedDice)}
+                  <span className="ml-2 text-xl font-bold">{displayedDice}</span>
                 </div>
               )}
               <Button 
@@ -268,17 +344,31 @@ function App() {
                       {getCropIcon(currentSquare.crop.type)}
                       <span className="capitalize">{currentSquare.crop.type}</span>
                     </div>
-                    <Badge className={getCropStageColor(currentSquare.crop.stage)}>
+                    <Badge className={getCropStageColor(currentSquare.crop.stage, currentSquare.owner)}>
                       {currentSquare.crop.stage}
                     </Badge>
                     {currentSquare.crop.stage === 'ready' && currentSquare.owner === currentPlayer.id && (
-                      <Button 
+                      <Button
                         onClick={harvestCrop}
                         className="w-full bg-yellow-600 hover:bg-yellow-700"
                       >
                         収穫する
                       </Button>
                     )}
+                  </div>
+                ) : currentSquare.is_stock_exchange ? (
+                  <div className="space-y-2">
+                    <div className="text-purple-700 mb-2">株取引所</div>
+                    {Object.entries(gameState.stocks).map(([name, price]) => (
+                      <Button
+                        key={name}
+                        onClick={() => buyStock(name)}
+                        disabled={currentPlayer.coins < price}
+                        className="w-full"
+                      >
+                        {name} を買う ({price}コイン)
+                      </Button>
+                    ))}
                   </div>
                 ) : (
                   <div className="text-gray-500">空のマス</div>
