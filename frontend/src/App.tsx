@@ -46,7 +46,6 @@ function App() {
 
   const createGame = async () => {
     if (!playerName.trim()) return
-    
     try {
       const response = await fetch(`${API_BASE}/game/create?player_name=${encodeURIComponent(playerName)}`, {
         method: 'POST'
