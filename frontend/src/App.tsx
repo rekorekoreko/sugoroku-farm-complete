@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -46,6 +46,24 @@ function App() {
   const [isRolling, setIsRolling] = useState(false)
   const [selectedCrop, setSelectedCrop] = useState<'carrot' | 'tomato' | 'corn' | 'wheat'>('carrot')
   const [eventMessages, setEventMessages] = useState<string[]>([])
+  const [displayPositions, setDisplayPositions] = useState<number[]>([])
+  const [moveDirection, setMoveDirection] = useState<string | null>(null)
+  const moveDirectionRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    moveDirectionRef.current = moveDirection
+  }, [moveDirection])
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const key = e.key.toLowerCase()
+      if (["w", "a", "s", "d"].includes(key)) {
+        setMoveDirection(key)
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [])
 
   const createGame = async () => {
     if (!playerName.trim()) return
@@ -57,6 +75,7 @@ function App() {
       const data = await response.json()
       setGameId(data.game_id)
       setGameState(data.game_state)
+      setDisplayPositions(data.game_state.players.map((p: Player) => p.position))
       setEventMessages([])
     } catch (error) {
       console.error('Failed to create game:', error)
@@ -64,16 +83,31 @@ function App() {
   }
 
   const rollDice = async () => {
-    if (!gameId || isRolling) return
-    
+    if (!gameId || isRolling || !gameState) return
+
     setIsRolling(true)
     try {
       const response = await fetch(`${API_BASE}/game/${gameId}/roll-dice`, {
         method: 'POST'
       })
       const data = await response.json()
-      setGameState(data.game_state)
+      const newState: GameState = data.game_state
+      setGameState(newState)
       setEventMessages(data.events || [])
+
+      const startPos = displayPositions[0]
+      const path: number[] = data.path && data.path.length
+        ? data.path
+        : Array.from({ length: data.dice_value }, (_, i) => (startPos + i + 1) % newState.board.length)
+
+      setDisplayPositions(prev => {
+        const updated = [...prev]
+        newState.players.forEach((p, idx) => {
+          if (idx !== 0) updated[idx] = p.position
+        })
+        return updated
+      })
+      animateMovement(path, newState.players.map(p => p.position))
     } catch (error) {
       console.error('Failed to roll dice:', error)
     } finally {
@@ -149,6 +183,42 @@ function App() {
     }
   }
 
+  const getDirection = (from: number, to: number) => {
+    const boardLen = gameState?.board.length || 0
+    const diff = (to - from + boardLen) % boardLen
+    const width = 10
+    if (diff === 1) return 'd'
+    if (diff === boardLen - 1) return 'a'
+    if (diff === width) return 's'
+    if (diff === boardLen - width) return 'w'
+    return null
+  }
+
+  const animateMovement = (path: number[], finalPositions: number[]) => {
+    let step = 0
+    let currentPos = displayPositions[0]
+    const interval = setInterval(() => {
+      if (step >= path.length) {
+        clearInterval(interval)
+        setDisplayPositions(finalPositions)
+        return
+      }
+      const next = path[step]
+      const expected = getDirection(currentPos, next)
+      if (moveDirectionRef.current === expected) {
+        currentPos = next
+        setDisplayPositions(prev => {
+          const updated = [...prev]
+          updated[0] = currentPos
+          return updated
+        })
+        moveDirectionRef.current = null
+        setMoveDirection(null)
+        step++
+      }
+    }, 400)
+  }
+
   if (!gameId) {
     return (
       <div className="min-h-screen bg-gradient-to-b from-green-100 to-blue-100 flex items-center justify-center p-4">
@@ -220,7 +290,7 @@ function App() {
                 <div className="text-xs text-green-700 mb-1">牧場</div>
               )}
               {gameState.players.map((player, idx) => (
-                player.position === index && (
+                displayPositions[idx] === index && (
                   <div
                     key={player.id}
                     className={`absolute -top-2 ${idx === 0 ? '-left-2 bg-blue-500' : '-right-2 bg-red-500'} w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-bold`}
