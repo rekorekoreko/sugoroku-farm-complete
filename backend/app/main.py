@@ -41,6 +41,8 @@ class Square(BaseModel):
     is_farm: bool = False
     # ID of the player who purchased the farm
     farm_owner: Optional[str] = None
+    # Whether this square is the crypto exchange
+    is_crypto_exchange: bool = False
 
 class Player(BaseModel):
     id: str
@@ -50,6 +52,8 @@ class Player(BaseModel):
     crops_harvested: int
     # Indicates whether the player owns the farm
     has_farm: bool = False
+    # Reko coin holdings
+    reko_coin: int = 0
 
 class GameState(BaseModel):
     players: List[Player]
@@ -57,6 +61,8 @@ class GameState(BaseModel):
     board: List[Square]
     turn: int
     dice_value: Optional[int] = None
+    crypto_price: int
+    crypto_history: List[int]
 
 games: Dict[str, GameState] = {}
 
@@ -64,8 +70,23 @@ games: Dict[str, GameState] = {}
 FARM_POS = 5
 
 def create_board() -> List[Square]:
-    """Create the game board with a single farm tile."""
-    return [Square(id=i, is_farm=(i == FARM_POS)) for i in range(20)]
+    """Create the game board with a farm and crypto exchange tile."""
+    crypto_pos = random.randint(0, 19)
+    while crypto_pos == FARM_POS:
+        crypto_pos = random.randint(0, 19)
+    return [
+        Square(
+            id=i,
+            is_farm=(i == FARM_POS),
+            is_crypto_exchange=(i == crypto_pos),
+        )
+        for i in range(20)
+    ]
+
+def update_crypto_price(game: GameState) -> None:
+    change = random.randint(-5, 5)
+    game.crypto_price = max(1, game.crypto_price + change)
+    game.crypto_history.append(game.crypto_price)
 
 def get_crop_growth_time(crop_type: CropType) -> int:
     growth_times = {
@@ -121,7 +142,9 @@ async def create_game(player_name: str):
         players=[player, bot],
         current_player=0,
         board=create_board(),
-        turn=1
+        turn=1,
+        crypto_price=100,
+        crypto_history=[100],
     )
     
     games[game_id] = game_state
@@ -196,6 +219,7 @@ async def roll_dice(game_id: str):
                 current_square.owner = current_player.id
                 events.append(f"{current_player.name}: {crop_type.value}を植えた")
 
+        update_crypto_price(game)
         game.turn += 1
         game.current_player = (game.current_player + 1) % len(game.players)
 
@@ -232,6 +256,48 @@ async def buy_farm(game_id: str):
     current_square.farm_owner = current_player.id
 
     return {"message": "Farm purchased successfully", "game_state": game}
+
+
+@app.post("/game/{game_id}/buy-reko")
+async def buy_reko(game_id: str):
+    if game_id not in games:
+        raise HTTPException(status_code=404, detail="Game not found")
+
+    game = games[game_id]
+    player = game.players[game.current_player]
+    square = game.board[player.position]
+
+    if not square.is_crypto_exchange:
+        raise HTTPException(status_code=400, detail="Not on crypto exchange")
+
+    if player.coins < game.crypto_price:
+        raise HTTPException(status_code=400, detail="Not enough coins")
+
+    player.coins -= game.crypto_price
+    player.reko_coin += 1
+
+    return {"message": "Bought 1 RekoCoin", "game_state": game}
+
+
+@app.post("/game/{game_id}/sell-reko")
+async def sell_reko(game_id: str):
+    if game_id not in games:
+        raise HTTPException(status_code=404, detail="Game not found")
+
+    game = games[game_id]
+    player = game.players[game.current_player]
+    square = game.board[player.position]
+
+    if not square.is_crypto_exchange:
+        raise HTTPException(status_code=400, detail="Not on crypto exchange")
+
+    if player.reko_coin <= 0:
+        raise HTTPException(status_code=400, detail="No RekoCoin to sell")
+
+    player.reko_coin -= 1
+    player.coins += game.crypto_price
+
+    return {"message": "Sold 1 RekoCoin", "game_state": game}
 
 @app.post("/game/{game_id}/plant-crop")
 async def plant_crop(game_id: str, crop_type: CropType):
