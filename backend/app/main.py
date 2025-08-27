@@ -140,14 +140,19 @@ async def roll_dice(game_id: str):
     game = games[game_id]
     events: List[str] = []
     can_buy_farm = False
+    player_path: List[int] = []
 
     for _ in range(len(game.players)):
         current_player = game.players[game.current_player]
         dice_value = random.randint(1, 6)
+        start_pos = current_player.position
         if current_player.id != "bot":
             game.dice_value = dice_value
+            player_path = [
+                (start_pos + i) % len(game.board) for i in range(1, dice_value + 1)
+            ]
 
-        new_position = (current_player.position + dice_value) % len(game.board)
+        new_position = (start_pos + dice_value) % len(game.board)
         current_player.position = new_position
         current_square = game.board[current_player.position]
 
@@ -200,6 +205,7 @@ async def roll_dice(game_id: str):
 
     return {
         "dice_value": game.dice_value,
+        "path": player_path,
         "game_state": game,
         "events": events,
         "can_buy_farm": can_buy_farm,

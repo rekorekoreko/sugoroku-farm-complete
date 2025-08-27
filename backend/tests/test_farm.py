@@ -26,6 +26,17 @@ def test_buy_farm():
     assert square["farm_owner"] == "player1"
 
 
+def test_roll_dice_returns_path():
+    game_id = create_game()
+    res = client.post(f"/game/{game_id}/roll-dice")
+    assert res.status_code == 200
+    data = res.json()
+    dice = data["dice_value"]
+    path = data["path"]
+    assert len(path) == dice
+    assert path[-1] == data["game_state"]["players"][0]["position"]
+
+
 def test_trigger_random_event_before_after_farm(monkeypatch):
     monkeypatch.setattr(random, "choice", lambda events: events[0])
     player = Player(id="p1", name="P1", position=0, coins=100, crops_harvested=0)
