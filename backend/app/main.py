@@ -60,12 +60,11 @@ class GameState(BaseModel):
 
 games: Dict[str, GameState] = {}
 
-# Position on the board that represents the farm
-FARM_POS = 5
 
 def create_board() -> List[Square]:
-    """Create the game board with a single farm tile."""
-    return [Square(id=i, is_farm=(i == FARM_POS)) for i in range(20)]
+    """Create the game board with a single farm tile at a random position."""
+    farm_index = random.randint(0, 19)
+    return [Square(id=i, is_farm=(i == farm_index)) for i in range(20)]
 
 def get_crop_growth_time(crop_type: CropType) -> int:
     growth_times = {
@@ -158,7 +157,7 @@ async def roll_dice(game_id: str):
             and current_square.farm_owner is None
             and current_player.id != "bot"
         ):
-            events.append("牧場に到着！100コインで購入できます")
+            events.append("牧場に到着！100コインで契約できます")
             can_buy_farm = True
 
         for square in game.board:

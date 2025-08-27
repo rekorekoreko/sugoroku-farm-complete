@@ -314,7 +314,7 @@ function App() {
                         disabled={currentPlayer.coins < 100}
                         className="w-full bg-purple-600 hover:bg-purple-700"
                       >
-                        牧場を買う (100コイン)
+                        牧場を契約 (100コイン)
                       </Button>
                     )}
                   </div>

@@ -1,6 +1,6 @@
 import random
 from fastapi.testclient import TestClient
-from app.main import app, games, FARM_POS, Player, trigger_random_event
+from app.main import app, games, Player, trigger_random_event
 
 client = TestClient(app)
 
@@ -13,13 +13,14 @@ def create_game():
 def test_buy_farm():
     game_id = create_game()
     game = games[game_id]
-    game.players[0].position = FARM_POS
+    farm_index = next(i for i, sq in enumerate(game.board) if sq.is_farm)
+    game.players[0].position = farm_index
 
     res = client.post(f"/game/{game_id}/buy-farm")
     assert res.status_code == 200
     data = res.json()
     player = data["game_state"]["players"][0]
-    square = data["game_state"]["board"][FARM_POS]
+    square = data["game_state"]["board"][farm_index]
     assert player["has_farm"] is True
     assert player["coins"] == 0
     assert square["farm_owner"] == "player1"
