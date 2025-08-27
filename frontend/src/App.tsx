@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -47,6 +47,43 @@ function App() {
   const [selectedCrop, setSelectedCrop] = useState<'carrot' | 'tomato' | 'corn' | 'wheat'>('carrot')
   const [eventMessages, setEventMessages] = useState<string[]>([])
 
+  const animateBotMove = (oldState: GameState, newState: GameState) => {
+    const botIndex = newState.players.findIndex(p => p.id === 'bot')
+    if (botIndex === -1) {
+      setGameState(newState)
+      return
+    }
+    const prevPos = oldState.players[botIndex].position
+    const newPos = newState.players[botIndex].position
+    const boardSize = newState.board.length
+    const steps = (newPos - prevPos + boardSize) % boardSize
+
+    // Start animation from previous position
+    setGameState({
+      ...newState,
+      players: newState.players.map((p, idx) =>
+        idx === botIndex ? { ...p, position: prevPos } : p
+      )
+    })
+
+    for (let i = 1; i <= steps; i++) {
+      setTimeout(() => {
+        setGameState(prev => {
+          if (!prev) return prev
+          const updated = [...prev.players]
+          updated[botIndex] = {
+            ...updated[botIndex],
+            position: (prevPos + i) % boardSize
+          }
+          return { ...prev, players: updated }
+        })
+      }, i * 400)
+    }
+
+    // Ensure final state is applied after animation for coins/events etc.
+    setTimeout(() => setGameState(newState), steps * 400 + 50)
+  }
+
   const createGame = async () => {
     if (!playerName.trim()) return
     
@@ -65,15 +102,19 @@ function App() {
 
   const rollDice = async () => {
     if (!gameId || isRolling) return
-    
+
     setIsRolling(true)
     try {
       const response = await fetch(`${API_BASE}/game/${gameId}/roll-dice`, {
         method: 'POST'
       })
       const data = await response.json()
-      setGameState(data.game_state)
       setEventMessages(data.events || [])
+      if (gameState) {
+        animateBotMove(gameState, data.game_state)
+      } else {
+        setGameState(data.game_state)
+      }
     } catch (error) {
       console.error('Failed to roll dice:', error)
     } finally {
@@ -148,6 +189,19 @@ function App() {
       default: return 'bg-gray-200 text-gray-800'
     }
   }
+
+  useEffect(() => {
+    if (
+      gameState &&
+      gameState.players[gameState.current_player].id === 'bot' &&
+      !isRolling
+    ) {
+      const timer = setTimeout(() => {
+        rollDice()
+      }, 2500)
+      return () => clearTimeout(timer)
+    }
+  }, [gameState, isRolling])
 
   if (!gameId) {
     return (

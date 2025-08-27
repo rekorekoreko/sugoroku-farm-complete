@@ -25,6 +25,12 @@ export default tseslint.config({
 })
 ```
 
+## Gameplay pacing
+
+The in-game bot now waits roughly 2.5 seconds before automatically rolling the
+dice. Automated UI tests should account for this delay when waiting for the
+bot's turn to complete.
+
 - Replace `tseslint.configs.recommended` to `tseslint.configs.recommendedTypeChecked` or `tseslint.configs.strictTypeChecked`
 - Optionally add `...tseslint.configs.stylisticTypeChecked`
 - Install [eslint-plugin-react](https://github.com/jsx-eslint/eslint-plugin-react) and update the config:
