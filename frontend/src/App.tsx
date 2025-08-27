@@ -16,6 +16,8 @@ interface Square {
   id: number
   crop?: Crop
   owner?: string
+  is_farm: boolean
+  farm_owner?: string
 }
 
 interface Player {
@@ -24,6 +26,7 @@ interface Player {
   position: number
   coins: number
   crops_harvested: number
+  has_farm: boolean
 }
 
 interface GameState {
@@ -94,7 +97,7 @@ function App() {
 
   const harvestCrop = async () => {
     if (!gameId) return
-    
+
     try {
       const response = await fetch(`${API_BASE}/game/${gameId}/harvest-crop`, {
         method: 'POST'
@@ -103,6 +106,21 @@ function App() {
       setGameState(data.game_state)
     } catch (error) {
       console.error('Failed to harvest crop:', error)
+    }
+  }
+
+  const buyFarm = async () => {
+    if (!gameId) return
+
+    try {
+      const response = await fetch(`${API_BASE}/game/${gameId}/buy-farm`, {
+        method: 'POST'
+      })
+      const data = await response.json()
+      setGameState(data.game_state)
+      setEventMessages([data.message])
+    } catch (error) {
+      console.error('Failed to buy farm:', error)
     }
   }
 
@@ -177,6 +195,7 @@ function App() {
             </span>
             <span>収穫数: {currentPlayer.crops_harvested}</span>
             <span>ターン: {gameState.turn}</span>
+            <span>牧場所有: {currentPlayer.has_farm ? 'はい' : 'いいえ'}</span>
           </div>
         </div>
 
@@ -193,10 +212,13 @@ function App() {
               className={`
                 relative aspect-square border-2 rounded-lg p-2 flex flex-col items-center justify-center
                 border-gray-300
-                ${square.crop ? 'bg-green-50' : 'bg-white'}
+                ${square.is_farm ? 'bg-yellow-50' : square.crop ? 'bg-green-50' : 'bg-white'}
               `}
             >
               <div className="text-xs font-bold mb-1">{index}</div>
+              {square.is_farm && (
+                <div className="text-xs text-green-700 mb-1">牧場</div>
+              )}
               {gameState.players.map((player, idx) => (
                 player.position === index && (
                   <div
@@ -259,9 +281,9 @@ function App() {
                   </Button>
                 ))}
               </div>
-              <Button 
+              <Button
                 onClick={plantCrop}
-                disabled={!!currentSquare.crop || currentPlayer.coins < 20}
+                disabled={!!currentSquare.crop || currentPlayer.coins < 20 || currentSquare.is_farm}
                 className="w-full bg-green-600 hover:bg-green-700"
               >
                 植える (20コイン)
@@ -276,7 +298,27 @@ function App() {
             <CardContent className="space-y-4">
               <div className="text-center">
                 <div className="text-2xl font-bold mb-2">マス {currentPlayer.position}</div>
-                {currentSquare.crop ? (
+                {currentSquare.is_farm ? (
+                  <div className="space-y-2">
+                    <div className="text-lg font-bold">牧場</div>
+                    {currentSquare.farm_owner ? (
+                      <div className="text-sm text-gray-700">
+                        所有者: {currentSquare.farm_owner === 'player1' ? 'あなた' : 'Bot'}
+                      </div>
+                    ) : (
+                      <div className="text-sm text-gray-700">未購入</div>
+                    )}
+                    {!currentPlayer.has_farm && !currentSquare.farm_owner && (
+                      <Button
+                        onClick={buyFarm}
+                        disabled={currentPlayer.coins < 100}
+                        className="w-full bg-purple-600 hover:bg-purple-700"
+                      >
+                        牧場を買う (100コイン)
+                      </Button>
+                    )}
+                  </div>
+                ) : currentSquare.crop ? (
                   <div className="space-y-2">
                     <div className="flex items-center justify-center gap-2">
                       {getCropIcon(currentSquare.crop.type)}
@@ -286,7 +328,7 @@ function App() {
                       {currentSquare.crop.stage}
                     </Badge>
                     {currentSquare.crop.stage === 'ready' && currentSquare.owner === currentPlayer.id && (
-                      <Button 
+                      <Button
                         onClick={harvestCrop}
                         className="w-full bg-yellow-600 hover:bg-yellow-700"
                       >
