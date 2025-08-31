@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -69,9 +69,25 @@ function App() {
       const data = await response.json()
       setGameId(data.game_id)
       setGameState(data.game_state)
+      setDisplayPositions(data.game_state.players.map((p: Player) => p.position))
       setEventMessages([])
     } catch (e) {
       console.error('Failed to create game:', e)
+    }
+  }
+
+  const buyFarm = async () => {
+    if (!gameId) return
+
+    try {
+      const response = await fetch(`${API_BASE}/game/${gameId}/buy-farm`, {
+        method: 'POST'
+      })
+      const data = await response.json()
+      setGameState(data.game_state)
+      setEventMessages([data.message])
+    } catch (error) {
+      console.error('Failed to buy farm:', error)
     }
   }
 
@@ -242,6 +258,7 @@ function App() {
             </span>
             <span>収穫数: {currentPlayer.crops_harvested}</span>
             <span>ターン: {gameState.turn}</span>
+            <span>牧場所有: {currentPlayer.has_farm ? 'はい' : 'いいえ'}</span>
           </div>
         </div>
 
@@ -268,7 +285,7 @@ function App() {
                 {square.building_owner && <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-indigo-600 text-white">建</span>}
               </div>
               {gameState.players.map((player, idx) => (
-                player.position === index && (
+                displayPositions[idx] === index && (
                   <div
                     key={player.id}
                     className={`absolute -top-2 ${idx === 0 ? '-left-2 bg-blue-500' : '-right-2 bg-red-500'} w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-bold`}
@@ -341,7 +358,27 @@ function App() {
             <CardContent className="space-y-4">
               <div className="text-center">
                 <div className="text-2xl font-bold mb-2">マス {currentPlayer.position}</div>
-                {currentSquare.crop ? (
+                {currentSquare.is_farm ? (
+                  <div className="space-y-2">
+                    <div className="text-lg font-bold">牧場</div>
+                    {currentSquare.farm_owner ? (
+                      <div className="text-sm text-gray-700">
+                        所有者: {currentSquare.farm_owner === 'player1' ? 'あなた' : 'Bot'}
+                      </div>
+                    ) : (
+                      <div className="text-sm text-gray-700">未購入</div>
+                    )}
+                    {!currentPlayer.has_farm && !currentSquare.farm_owner && (
+                      <Button
+                        onClick={buyFarm}
+                        disabled={currentPlayer.coins < 100}
+                        className="w-full bg-purple-600 hover:bg-purple-700"
+                      >
+                        牧場を契約 (100コイン)
+                      </Button>
+                    )}
+                  </div>
+                ) : currentSquare.crop ? (
                   <div className="space-y-2">
                     <div className="flex items-center justify-center gap-2">
                       {getCropIcon(currentSquare.crop.type)}

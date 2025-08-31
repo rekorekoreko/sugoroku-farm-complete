@@ -49,6 +49,7 @@ class Square(BaseModel):
     id: int
     crop: Optional[Crop] = None
     owner: Optional[str] = None
+<<<<<<< HEAD
     # Special tiles
     is_market: bool = False  # 5
     is_farm: bool = False    # 10
@@ -57,6 +58,12 @@ class Square(BaseModel):
     # Buildings
     building_owner: Optional[str] = None
 
+=======
+    # Whether this square represents the special farm tile
+    is_farm: bool = False
+    # ID of the player who purchased the farm
+    farm_owner: Optional[str] = None
+>>>>>>> d55f9e8cd1c22b97b1b907b5a11807bdebbf7f43
 
 class Player(BaseModel):
     id: str
@@ -64,12 +71,17 @@ class Player(BaseModel):
     position: int
     coins: int
     crops_harvested: int
+<<<<<<< HEAD
     inventory: Dict[str, int] = {}
     stocks_shares: int = 0
     # Job world
     job_type: Optional[str] = None  # 'lawyer'|'isekai'|'programmer'|'idol'
     job_position: Optional[int] = None  # 0..20 while in job world
 
+=======
+    # Indicates whether the player owns the farm
+    has_farm: bool = False
+>>>>>>> d55f9e8cd1c22b97b1b907b5a11807bdebbf7f43
 
 class GameState(BaseModel):
     players: List[Player]
@@ -93,6 +105,14 @@ class GameState(BaseModel):
 
 games: Dict[str, GameState] = {}
 
+<<<<<<< HEAD
+=======
+
+def create_board() -> List[Square]:
+    """Create the game board with a single farm tile at a random position."""
+    farm_index = random.randint(0, 19)
+    return [Square(id=i, is_farm=(i == farm_index)) for i in range(20)]
+>>>>>>> d55f9e8cd1c22b97b1b907b5a11807bdebbf7f43
 
 def create_board() -> List[Square]:
     board = [Square(id=i) for i in range(20)]
@@ -128,8 +148,20 @@ def get_crop_value(tp: CropType) -> int:
 
 
 def trigger_random_event(player: Player) -> str:
+<<<<<<< HEAD
     ev = [
         ("牧場経営が好調！利益が出た", 30),
+=======
+    """Trigger a random farm-related event.
+
+    Players without a farm receive a neutral message with no coin change.
+    """
+    if not player.has_farm:
+        return f"{player.name}: 牧場を持っていないので特に何も起こらなかった"
+
+    events = [
+        ("牧場経営が順調！利益が出た", 30),
+>>>>>>> d55f9e8cd1c22b97b1b907b5a11807bdebbf7f43
         ("家畜の世話で出費がかさんだ", -20),
         ("特に何も起こらなかった", 0),
     ]
@@ -190,7 +222,10 @@ async def roll_dice(game_id: str):
 
     game = games[game_id]
     events: List[str] = []
+    can_buy_farm = False
+    player_path: List[int] = []
 
+<<<<<<< HEAD
     current_player = game.players[game.current_player]
     dice_value = random.randint(1, 6)
     if current_player.id != "bot":
@@ -217,7 +252,30 @@ async def roll_dice(game_id: str):
     else:
         # Move on main board
         new_position = (current_player.position + dice_value) % len(game.board)
+=======
+    for _ in range(len(game.players)):
+        current_player = game.players[game.current_player]
+        dice_value = random.randint(1, 6)
+        start_pos = current_player.position
+        if current_player.id != "bot":
+            game.dice_value = dice_value
+            player_path = [
+                (start_pos + i) % len(game.board) for i in range(1, dice_value + 1)
+            ]
+
+        new_position = (start_pos + dice_value) % len(game.board)
+>>>>>>> d55f9e8cd1c22b97b1b907b5a11807bdebbf7f43
         current_player.position = new_position
+        current_square = game.board[current_player.position]
+
+        if (
+            current_square.is_farm
+            and not current_player.has_farm
+            and current_square.farm_owner is None
+            and current_player.id != "bot"
+        ):
+            events.append("牧場に到着！100コインで契約できます")
+            can_buy_farm = True
 
     # Crop growth (only relevant on main board)
     if current_player.job_type is None:
@@ -249,6 +307,7 @@ async def roll_dice(game_id: str):
             current_player.job_position = 0
             events.append(f"BOTが{bot_choice}に転職した！")
 
+<<<<<<< HEAD
     # Stock price update (clamped 10-300)
     if current_player.job_type is None:
         old_price = game.stock_price
@@ -259,6 +318,31 @@ async def roll_dice(game_id: str):
         game.last_stock_change = pct
         if pct != 0:
             events.append(f"株価が{old_price}→{new_price}（{'+' if pct>0 else ''}{pct}%）に変動")
+=======
+        if current_player.id == "bot":
+            if (
+                current_square.crop
+                and current_square.crop.stage == CropStage.READY
+                and current_square.owner == current_player.id
+            ):
+                value = get_crop_value(current_square.crop.type) * 2
+                current_player.coins += value
+                current_player.crops_harvested += 1
+                events.append(f"{current_player.name}: 作物を収穫して{value}コインを得た")
+                current_square.crop = None
+                current_square.owner = None
+            elif current_square.crop is None and current_player.coins >= 20:
+                crop_type = random.choice(list(CropType))
+                current_player.coins -= 20
+                current_square.crop = Crop(
+                    type=crop_type,
+                    stage=CropStage.PLANTED,
+                    planted_turn=game.turn,
+                    growth_time=get_crop_growth_time(crop_type),
+                )
+                current_square.owner = current_player.id
+                events.append(f"{current_player.name}: {crop_type.value}を植えた")
+>>>>>>> d55f9e8cd1c22b97b1b907b5a11807bdebbf7f43
 
     # Random event
     events.append(trigger_random_event(current_player))
@@ -326,7 +410,40 @@ async def roll_dice(game_id: str):
     else:
         game.awaiting_action = True
 
-    return {"dice_value": game.dice_value, "game_state": game, "events": events}
+    return {
+        "dice_value": game.dice_value,
+        "path": player_path,
+        "game_state": game,
+        "events": events,
+        "can_buy_farm": can_buy_farm,
+    }
+
+
+@app.post("/game/{game_id}/buy-farm")
+async def buy_farm(game_id: str):
+    if game_id not in games:
+        raise HTTPException(status_code=404, detail="Game not found")
+
+    game = games[game_id]
+    current_player = game.players[game.current_player]
+    current_square = game.board[current_player.position]
+
+    if not current_square.is_farm:
+        raise HTTPException(status_code=400, detail="This square is not a farm")
+    if current_player.has_farm:
+        raise HTTPException(status_code=400, detail="Player already owns a farm")
+    if current_square.farm_owner is not None:
+        raise HTTPException(status_code=400, detail="Farm already owned")
+
+    cost = 100
+    if current_player.coins < cost:
+        raise HTTPException(status_code=400, detail="Not enough coins")
+
+    current_player.coins -= cost
+    current_player.has_farm = True
+    current_square.farm_owner = current_player.id
+
+    return {"message": "Farm purchased successfully", "game_state": game}
 
 
 @app.post("/game/{game_id}/plant-crop")
