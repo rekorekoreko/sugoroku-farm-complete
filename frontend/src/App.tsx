@@ -1,8 +1,11 @@
 import { useState, useEffect, useRef } from 'react'
 import { Button } from '@/components/ui/button'
+import EventLog from '@/components/EventLog'
+import InvaderDuel from '@/components/InvaderDuel'
+import BattleRPG from '@/components/BattleRPG'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Dice1, Dice2, Dice3, Dice4, Dice5, Dice6, Sprout, Wheat, Carrot, Apple, Coins } from 'lucide-react'
+import { Dice1, Dice2, Dice3, Dice4, Dice5, Dice6, Sprout, Wheat, Carrot, Apple, Coins, Menu, X, User, Bot as BotIcon } from 'lucide-react'
 import './App.css'
 
 type CropType = 'carrot' | 'tomato' | 'corn' | 'wheat'
@@ -19,11 +22,17 @@ interface Square {
   id: number
   crop?: Crop
   owner?: string
-  // special tiles
   is_market?: boolean
   is_farm?: boolean
   is_estate?: boolean
+  is_battle?: boolean
   building_owner?: string
+  // AI story overlay (optional)
+  is_story?: boolean
+  story_label?: string
+  story_color?: string
+  story_turns?: number
+  story_effect?: string
 }
 
 interface Player {
@@ -43,12 +52,12 @@ interface GameState {
   turn: number
   dice_value?: number
   awaiting_action?: boolean
-  // market / bazaar
   stock_price?: number
   last_stock_change?: number
   crop_prices?: Record<string, number>
   crop_changes?: Record<string, number>
   bazaar_offer_price?: number
+  minigame?: any
 }
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
@@ -61,33 +70,21 @@ function App() {
   const [selectedCrop, setSelectedCrop] = useState<CropType>('carrot')
   const [eventMessages, setEventMessages] = useState<string[]>([])
   const [estateTarget, setEstateTarget] = useState<number>(0)
+  const [displayPositions, setDisplayPositions] = useState<number[] | null>(null)
+  const [showStatus, setShowStatus] = useState(false)
+  const minigameReadySent = useRef(false)
 
   const createGame = async () => {
-    if (!playerName.trim()) return
+    const name = (playerName ?? '').trim() || 'プレイヤー'
     try {
-      const response = await fetch(`${API_BASE}/game/create?player_name=${encodeURIComponent(playerName)}`, { method: 'POST' })
+      const response = await fetch(`${API_BASE}/game/create?player_name=${encodeURIComponent(name)}`, { method: 'POST' })
       const data = await response.json()
       setGameId(data.game_id)
       setGameState(data.game_state)
-      setDisplayPositions(data.game_state.players.map((p: Player) => p.position))
       setEventMessages([])
     } catch (e) {
       console.error('Failed to create game:', e)
-    }
-  }
-
-  const buyFarm = async () => {
-    if (!gameId) return
-
-    try {
-      const response = await fetch(`${API_BASE}/game/${gameId}/buy-farm`, {
-        method: 'POST'
-      })
-      const data = await response.json()
-      setGameState(data.game_state)
-      setEventMessages([data.message])
-    } catch (error) {
-      console.error('Failed to buy farm:', error)
+      setEventMessages(prev => ['ゲーム開始に失敗しました。バックエンドは起動していますか？', ...prev])
     }
   }
 
@@ -116,18 +113,103 @@ function App() {
     }
   }
 
+  const getStoryBadgeColor = (color?: string) => {
+    switch (color) {
+      case 'rose': return 'bg-rose-100 text-rose-700'
+      case 'emerald': return 'bg-emerald-100 text-emerald-700'
+      case 'sky': return 'bg-sky-100 text-sky-700'
+      case 'amber': return 'bg-amber-100 text-amber-700'
+      default: return 'bg-fuchsia-100 text-fuchsia-700'
+    }
+  }
+
+  // animate one-player movement step by step
+  const animateMovement = async (
+    playerIndex: number,
+    fromPos: number,
+    steps: number,
+    boardLen: number,
+    delayMs = 250,
+    startPositions?: number[],
+  ) => {
+    let current = (displayPositions ?? startPositions ?? gameState?.players.map(p => p.position) ?? []).slice()
+    if (current.length === 0) return
+    setDisplayPositions(current)
+    for (let i = 1; i <= steps; i++) {
+      current = current.slice()
+      current[playerIndex] = (fromPos + i) % boardLen
+      setDisplayPositions(current)
+      await new Promise(r => setTimeout(r, delayMs))
+    }
+  }
+
   const rollDice = async () => {
-    if (!gameId || isRolling) return
+    if (!gameId || isRolling || !gameState) return
     setIsRolling(true)
     try {
+      const moverIndex = gameState.current_player
+      const startPos = gameState.players[moverIndex].position
+      const boardLen = gameState.board.length
+
       const res = await fetch(`${API_BASE}/game/${gameId}/roll-dice`, { method: 'POST' })
       const data = await res.json()
+
+      const steps: number = (data.dice_value ?? data.game_state?.dice_value ?? 0) as number
+      if (steps > 0) {
+        await animateMovement(moverIndex, startPos, steps, boardLen, 250, gameState.players.map(p => p.position))
+      }
+      // apply server state, then clear animation positions
       setGameState(data.game_state)
       setEventMessages(data.events || [])
+      setDisplayPositions(null)
     } catch (e) {
       console.error('Failed to roll dice:', e)
     } finally {
       setIsRolling(false)
+    }
+  }
+
+  // Minigame lifecycle: auto-ready when server sets a minigame
+  useEffect(() => {
+    (async () => {
+      if (!gameId || !gameState || !gameState.minigame) return
+      if (minigameReadySent.current) return
+      try {
+        await fetch(`${API_BASE}/game/${gameId}/minigame/ready`, { method: 'POST' })
+      } catch {}
+      minigameReadySent.current = true
+    })()
+  }, [gameId, gameState?.minigame])
+
+  const onFinishMinigame = async (w: 'player'|'bot') => {
+    if (!gameId) return
+    const attackerId = (gameState as any)?.minigame?.attacker_id as string | undefined
+    const humanId = (gameState as any)?.players?.find?.((p: any) => p?.id !== 'bot')?.id as string | undefined
+    let winner: 'attacker' | 'defender' = 'attacker'
+    if (w === 'player') {
+      winner = attackerId && humanId && attackerId !== humanId ? 'defender' : 'attacker'
+    } else {
+      winner = attackerId && humanId && attackerId !== humanId ? 'attacker' : 'defender'
+    }
+    try {
+      const res = await fetch(`${API_BASE}/game/${gameId}/minigame/resolve?winner=${winner}`, { method: 'POST' })
+      const data = await res.json()
+      setGameState(data.game_state)
+    } catch (e) {
+      console.error('Failed to resolve minigame:', e)
+    } finally {
+      minigameReadySent.current = false
+    }
+  }
+
+  const battleAttack = async () => {
+    if (!gameId) return
+    try {
+      const res = await fetch(`${API_BASE}/game/${gameId}/minigame/rpg/act?action=attack`, { method: 'POST' })
+      const data = await res.json()
+      setGameState(data.game_state)
+    } catch (e) {
+      console.error('Failed to do battle action:', e)
     }
   }
 
@@ -137,6 +219,13 @@ function App() {
       const res = await fetch(`${API_BASE}/game/${gameId}/end-turn`, { method: 'POST' })
       const data = await res.json()
       setGameState(data.game_state)
+      // run bot turn if next is bot
+      try {
+        const next = data.game_state.players[data.game_state.current_player]
+        if (next?.id === 'bot') {
+          await runBotTurn(data.game_state)
+        }
+      } catch {}
     } catch (e) {
       console.error('Failed to end turn:', e)
     }
@@ -156,6 +245,13 @@ function App() {
       const res = await fetch(`${API_BASE}/game/${gameId}/plant-crop?crop_type=${selectedCrop}`, { method: 'POST' })
       const data = await res.json()
       setGameState(data.game_state)
+      // if next player is bot, auto-run bot turn
+      try {
+        const next = data.game_state.players[data.game_state.current_player]
+        if (next?.id === 'bot') {
+          await runBotTurn(data.game_state)
+        }
+      } catch {}
     } catch (e) {
       console.error('Failed to plant crop:', e)
     }
@@ -167,6 +263,13 @@ function App() {
       const res = await fetch(`${API_BASE}/game/${gameId}/harvest-crop`, { method: 'POST' })
       const data = await res.json()
       setGameState(data.game_state)
+      // if next player is bot, auto-run bot turn with animation
+      try {
+        const next = data.game_state.players[data.game_state.current_player]
+        if (next?.id === 'bot') {
+          await runBotTurn(data.game_state)
+        }
+      } catch {}
     } catch (e) {
       console.error('Failed to harvest crop:', e)
     }
@@ -216,12 +319,37 @@ function App() {
     }
   }
 
+  // run bot's full turn automatically (roll dice + animate)
+  const runBotTurn = async (sourceState?: GameState) => {
+    if (!gameId) return
+    let s = sourceState ?? gameState
+    if (!s) return
+    // only proceed if it's bot's turn
+    if (s.players[s.current_player]?.id !== 'bot') return
+    try {
+      const moverIndex = s.current_player
+      const startPos = s.players[moverIndex].position
+      const boardLen = s.board.length
+      const res = await fetch(`${API_BASE}/game/${gameId}/roll-dice`, { method: 'POST' })
+      const data = await res.json()
+      const steps: number = (data.dice_value ?? data.game_state?.dice_value ?? 0) as number
+      if (steps > 0) {
+        await animateMovement(moverIndex, startPos, steps, boardLen, 250, s.players.map(p => p.position))
+      }
+      setGameState(data.game_state)
+      setEventMessages(data.events || [])
+      setDisplayPositions(null)
+    } catch (e) {
+      console.error('Failed to run bot turn:', e)
+    }
+  }
+
   if (!gameId) {
     return (
       <div className="min-h-screen bg-gradient-to-b from-green-100 to-blue-100 flex items-center justify-center p-4">
         <Card className="w-full max-w-md">
           <CardHeader>
-            <CardTitle className="text-center text-2xl font-bold text-green-800">🎲 Sugoroku Farm 🌱</CardTitle>
+            <CardTitle className="text-center text-2xl font-bold text-green-800">Leko</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div>
@@ -234,7 +362,7 @@ function App() {
                 placeholder="名前を入力してください"
               />
             </div>
-            <Button onClick={createGame} className="w-full bg-green-600 hover:bg-green-700">ゲーム開始</Button>
+            <Button type="button" onClick={createGame} className="w-full bg-green-600 hover:bg-green-700">ゲーム開始</Button>
           </CardContent>
         </Card>
       </div>
@@ -248,9 +376,68 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-green-100 to-blue-100 p-4">
+      {/* Hamburger button */}
+      <button
+        onClick={() => setShowStatus(true)}
+        className="fixed top-4 left-4 z-40 inline-flex items-center justify-center w-9 h-9 rounded-md bg-white/90 border shadow hover:bg-white"
+        aria-label="Open status"
+      >
+        <Menu className="w-5 h-5 text-slate-700" />
+      </button>
+
+      {/* Slide-over Status Panel */}
+      {showStatus && (
+        <div className="fixed inset-0 z-50">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setShowStatus(false)} />
+          <div className="absolute top-0 right-0 h-full w-[360px] max-w-[92vw] bg-white shadow-xl border-l p-4 overflow-y-auto">
+            <div className="flex items-center justify-between mb-3">
+              <div className="text-base font-semibold">ステータス</div>
+              <button onClick={() => setShowStatus(false)} className="inline-flex items-center justify-center w-8 h-8 rounded hover:bg-gray-100"><X className="w-5 h-5" /></button>
+            </div>
+            {gameState && gameState.players.map((p) => {
+              const isBot = p.id === 'bot'
+              const titleIcon = isBot ? <BotIcon className="w-4 h-4" /> : <User className="w-4 h-4" />
+              const inv = p.inventory ?? {}
+              return (
+                <div key={p.id} className="mb-4 rounded-lg border p-3 bg-white">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 font-semibold">
+                      {titleIcon}
+                      <span>{p.name}</span>
+                    </div>
+                    <div className={`text-xs px-2 py-0.5 rounded ${isBot ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>{isBot ? 'BOT' : 'PLAYER'}</div>
+                  </div>
+                  <div className="mt-2 grid grid-cols-2 gap-2 text-sm">
+                    <div className="flex items-center gap-1 text-slate-700"><Coins className="w-4 h-4 text-yellow-500" />{p.coins}</div>
+                    <div className="text-slate-700">位置: {p.position}</div>
+                    <div className="text-slate-700">収穫: {p.crops_harvested}</div>
+                    <div className="text-slate-700">株: {p.stocks_shares ?? 0}</div>
+                  </div>
+                  <div className="mt-2">
+                    <div className="text-xs text-slate-500 mb-1">インベントリ</div>
+                    <div className="grid grid-cols-2 gap-2 text-sm">
+                      <div className="flex items-center gap-2"><Carrot className="w-4 h-4 text-orange-500" /><span>carrot</span><span className="ml-auto text-slate-700">{inv['carrot'] ?? 0}</span></div>
+                      <div className="flex items-center gap-2"><Apple className="w-4 h-4 text-red-500" /><span>tomato</span><span className="ml-auto text-slate-700">{inv['tomato'] ?? 0}</span></div>
+                      <div className="flex items-center gap-2"><Wheat className="w-4 h-4 text-yellow-500" /><span>corn</span><span className="ml-auto text-slate-700">{inv['corn'] ?? 0}</span></div>
+                      <div className="flex items-center gap-2"><Wheat className="w-4 h-4 text-amber-600" /><span>wheat</span><span className="ml-auto text-slate-700">{inv['wheat'] ?? 0}</span></div>
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+      {gameState?.minigame && gameState.players[gameState.current_player]?.id !== 'bot' && (
+        gameState.minigame.type === 'rpg' ? (
+          <BattleRPG minigame={gameState.minigame} onAttack={battleAttack} />
+        ) : (
+          <InvaderDuel onFinish={onFinishMinigame} />
+        )
+      )}
       <div className="max-w-6xl mx-auto">
         <div className="text-center mb-6">
-          <h1 className="text-3xl font-bold text-green-800 mb-2">🎲 Sugoroku Farm 🌱</h1>
+          <h1 className="text-3xl font-bold text-green-800 mb-2">Leko</h1>
           <div className="flex justify-center items-center gap-4 text-lg">
             <span className="flex items-center gap-2">
               <Coins className="w-5 h-5 text-yellow-500" />
@@ -258,34 +445,40 @@ function App() {
             </span>
             <span>収穫数: {currentPlayer.crops_harvested}</span>
             <span>ターン: {gameState.turn}</span>
-            <span>牧場所有: {currentPlayer.has_farm ? 'はい' : 'いいえ'}</span>
           </div>
         </div>
 
-        <div className="mb-4 text-center space-y-1">
-          {eventMessages.map((msg, idx) => (
-            <div key={idx} className="text-sm text-gray-700">{msg}</div>
-          ))}
-        </div>
+        <EventLog events={eventMessages} turn={gameState.turn} />
 
         <div className="grid grid-cols-10 gap-2 mb-6 p-4 bg-white rounded-lg shadow-lg">
           {gameState.board.map((square, index) => (
             <div
               key={square.id}
-              className={`
-                relative aspect-square border-2 rounded-lg p-2 flex flex-col items-center justify-center
-                border-gray-300 ${square.crop ? 'bg-green-50' : 'bg-white'}
-              `}
+              className={`relative aspect-square border-2 rounded-lg p-2 flex flex-col items-center justify-center 
+                ${square.crop ? 'bg-green-50' : 'bg-white'}
+                ${square.is_story ? 'ring-2 ring-offset-1 ring-pink-300' : ''}
+                ${square.owner ? ((gameState.players.find(p => p.id === square.owner)?.id === 'bot')
+                  ? 'border-red-300 ring-2 ring-offset-1 ring-red-300'
+                  : 'border-blue-300 ring-2 ring-offset-1 ring-blue-300') : 'border-gray-300'}`}
             >
               <div className="text-xs font-bold mb-1">
                 {index}
+                {square.is_battle && <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-rose-100 text-rose-700">戦</span>}
                 {square.is_market && <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-purple-100 text-purple-700">株</span>}
                 {square.is_farm && <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-700">農</span>}
                 {square.is_estate && <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-indigo-100 text-indigo-700">不</span>}
                 {square.building_owner && <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-indigo-600 text-white">建</span>}
               </div>
-              {gameState.players.map((player, idx) => (
-                displayPositions[idx] === index && (
+              {square.is_story && (
+                <div className="absolute top-1 right-1">
+                  <span className={`text-[10px] px-1 py-0.5 rounded ${getStoryBadgeColor(square.story_color)}`}>
+                    {square.story_label ?? '物'}
+                  </span>
+                </div>
+              )}
+              {gameState.players.map((player, idx) => {
+                const pos = displayPositions ? displayPositions[idx] : player.position
+                return pos === index && (
                   <div
                     key={player.id}
                     className={`absolute -top-2 ${idx === 0 ? '-left-2 bg-blue-500' : '-right-2 bg-red-500'} w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-bold`}
@@ -293,13 +486,14 @@ function App() {
                     {idx === 0 ? 'P1' : 'B'}
                   </div>
                 )
-              ))}
+              })}
               {square.crop && (
                 <div className="flex flex-col items-center">
                   {getCropIcon(square.crop.type)}
                   <Badge className={`text-xs mt-1 ${getCropStageColor(square.crop.stage)}`}>
                     {square.crop.stage}
                   </Badge>
+                  {/* Owner text removed in favor of color-coding */}
                 </div>
               )}
             </div>
@@ -358,27 +552,7 @@ function App() {
             <CardContent className="space-y-4">
               <div className="text-center">
                 <div className="text-2xl font-bold mb-2">マス {currentPlayer.position}</div>
-                {currentSquare.is_farm ? (
-                  <div className="space-y-2">
-                    <div className="text-lg font-bold">牧場</div>
-                    {currentSquare.farm_owner ? (
-                      <div className="text-sm text-gray-700">
-                        所有者: {currentSquare.farm_owner === 'player1' ? 'あなた' : 'Bot'}
-                      </div>
-                    ) : (
-                      <div className="text-sm text-gray-700">未購入</div>
-                    )}
-                    {!currentPlayer.has_farm && !currentSquare.farm_owner && (
-                      <Button
-                        onClick={buyFarm}
-                        disabled={currentPlayer.coins < 100}
-                        className="w-full bg-purple-600 hover:bg-purple-700"
-                      >
-                        牧場を契約 (100コイン)
-                      </Button>
-                    )}
-                  </div>
-                ) : currentSquare.crop ? (
+                {currentSquare.crop ? (
                   <div className="space-y-2">
                     <div className="flex items-center justify-center gap-2">
                       {getCropIcon(currentSquare.crop.type)}
@@ -403,7 +577,7 @@ function App() {
                   <div className="text-center text-sm">
                     価格: {gameState.stock_price ?? 100}（{(gameState.last_stock_change ?? 0) >= 0 ? '+' : ''}{gameState.last_stock_change ?? 0}%）
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 [&>button]:h-8 [&>button]:px-2 [&>button]:text-xs">
                     <Button onClick={() => buyStock(1)} disabled={!gameState.awaiting_action || currentPlayer.id === 'bot' || (gameState.stock_price ?? 100) > currentPlayer.coins} variant="outline">買う（1）</Button>
                     <Button onClick={() => buyStock(5)} disabled={!gameState.awaiting_action || currentPlayer.id === 'bot' || ((gameState.stock_price ?? 100) * 5) > currentPlayer.coins} variant="outline">買う（5）</Button>
                     <Button onClick={() => sellStock(1)} disabled={!gameState.awaiting_action || currentPlayer.id === 'bot' || (currentPlayer.stocks_shares ?? 0) < 1} variant="outline">売る（1）</Button>
@@ -424,15 +598,22 @@ function App() {
                   ) : (
                     <div className="text-center text-xs text-gray-500">バイヤーはいません（自分のターン3回ごとに出現）</div>
                   )}
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {(['carrot','tomato','corn','wheat'] as const).map((k) => {
                       const owned = (currentPlayer.inventory ?? {})[k] ?? 0
                       return (
-                        <div key={k} className="flex items-center justify-between text-sm">
-                          <div className="capitalize">{k} <span className="ml-2 text-xs text-gray-500">所持: {owned}</span></div>
-                          <div className="flex gap-2">
-                            <Button onClick={() => sellInventory(k, 1)} disabled={!gameState.awaiting_action || currentPlayer.id === 'bot' || owned < 1 || !gameState.bazaar_offer_price} variant="outline">売る（1）</Button>
-                            <Button onClick={() => sellInventory(k, owned)} disabled={!gameState.awaiting_action || currentPlayer.id === 'bot' || owned < 1 || !gameState.bazaar_offer_price} variant="outline">全部売る</Button>
+                        <div key={k} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-sm p-2 border rounded">
+                          <div className="capitalize truncate">
+                            {k}
+                            <span className="ml-2 text-xs text-gray-500">所持: {owned}</span>
+                          </div>
+                          <div className="flex flex-wrap gap-2 sm:justify-end">
+                            <Button size="sm" onClick={() => sellInventory(k, 1)} disabled={!gameState.awaiting_action || currentPlayer.id === 'bot' || owned < 1 || !gameState.bazaar_offer_price} variant="outline" className="px-2">
+                              売る（1）
+                            </Button>
+                            <Button size="sm" onClick={() => sellInventory(k, owned)} disabled={!gameState.awaiting_action || currentPlayer.id === 'bot' || owned < 1 || !gameState.bazaar_offer_price} variant="outline" className="px-2">
+                              全部売る
+                            </Button>
                           </div>
                         </div>
                       )
@@ -462,4 +643,3 @@ function App() {
 }
 
 export default App
-
