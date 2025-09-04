@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef } from 'react'
+﻿import { useState, useEffect, useRef } from 'react'
 import { Button } from '@/components/ui/button'
 import EventLog from '@/components/EventLog'
 import InvaderDuel from '@/components/InvaderDuel'
 import BattleRPG from '@/components/BattleRPG'
+import EventStage3D from '@/components/EventStage3D'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Dice1, Dice2, Dice3, Dice4, Dice5, Dice6, Sprout, Wheat, Carrot, Apple, Coins, Menu, X, User, Bot as BotIcon } from 'lucide-react'
@@ -72,6 +73,7 @@ function App() {
   const [estateTarget, setEstateTarget] = useState<number>(0)
   const [displayPositions, setDisplayPositions] = useState<number[] | null>(null)
   const [showStatus, setShowStatus] = useState(false)
+  const [showEventStage, setShowEventStage] = useState(false)
   const minigameReadySent = useRef(false)
 
   const createGame = async () => {
@@ -212,6 +214,97 @@ function App() {
       console.error('Failed to do battle action:', e)
     }
   }
+
+  // auto open 3D stage for event tiles when it's human action phase
+  useEffect(() => {
+    if (!gameState) return
+    const me = gameState.players[gameState.current_player]
+    const sq = gameState.board[me.position]
+    const isEvent = !!(sq.is_market || sq.is_farm || sq.is_estate)
+    const shouldOpen = isEvent && me.id !== 'bot' && !!gameState.awaiting_action
+    setShowEventStage(shouldOpen)
+  }, [gameState?.current_player, gameState?.awaiting_action, gameState?.turn])
+
+  // panels for each event
+  const renderEventPanel = () => {
+    if (!gameState) return null
+    const me = gameState.players[gameState.current_player]
+    const sq = gameState.board[me.position]
+    if (sq.is_market) {
+      return (
+        <div className="space-y-2">
+          <div className="text-sm">価格: {gameState.stock_price ?? 100}（{(gameState.last_stock_change ?? 0) >= 0 ? '+' : ''}{gameState.last_stock_change ?? 0}%）</div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 [&>button]:h-8 [&>button]:px-2 [&>button]:text-xs">
+            <Button variant="outline" onClick={() => buyStock(1)} disabled={!gameState.awaiting_action || me.id === 'bot' || (gameState.stock_price ?? 100) > me.coins}>買う(1)</Button>
+            <Button variant="outline" onClick={() => buyStock(5)} disabled={!gameState.awaiting_action || me.id === 'bot' || ((gameState.stock_price ?? 100) * 5) > me.coins}>買う(5)</Button>
+            <Button variant="outline" onClick={() => sellStock(1)} disabled={!gameState.awaiting_action || me.id === 'bot' || (me.stocks_shares ?? 0) < 1}>売る(1)</Button>
+            <Button variant="outline" onClick={() => sellStock(me.stocks_shares ?? 0)} disabled={!gameState.awaiting_action || me.id === 'bot' || (me.stocks_shares ?? 0) < 1}>全部売る</Button>
+          </div>
+        </div>
+      )
+    }
+    if (sq.is_farm) {
+      return (
+        <div className="space-y-2">
+          {gameState.bazaar_offer_price ? (
+            <div className="text-sm">バイヤーが{gameState.bazaar_offer_price}ゴールドで買い取り希望！</div>
+          ) : (
+            <div className="text-xs text-gray-500">バイヤーは不在（プレイヤーのターン3回ごとに出現）</div>
+          )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {(['carrot','tomato','corn','wheat'] as const).map((k) => {
+              const owned = (me.inventory ?? {})[k] ?? 0
+              return (
+                <div key={k} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-sm p-2 border rounded">
+                  <div className="capitalize truncate">
+                    {k}
+                    <span className="ml-2 text-xs text-gray-500">所持: {owned}</span>
+                  </div>
+                  <div className="flex flex-wrap gap-2 sm:justify-end">
+                    <Button size="sm" onClick={() => sellInventory(k, 1)} disabled={!gameState.awaiting_action || me.id === 'bot' || owned < 1 || !gameState.bazaar_offer_price} variant="outline" className="px-2">売る(1)</Button>
+                    <Button size="sm" onClick={() => sellInventory(k, owned)} disabled={!gameState.awaiting_action || me.id === 'bot' || owned < 1 || !gameState.bazaar_offer_price} variant="outline" className="px-2">全部売る</Button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )
+    }
+    if (sq.is_estate) {
+      return (
+        <div className="space-y-2">
+          <div className="text-xs text-gray-600">イベントマス以外に建設できます（500コイン）</div>
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-gray-600">建設マスID</label>
+            <input type="number" min={0} max={19} value={estateTarget} onChange={(e) => setEstateTarget(Math.max(0, Math.min(19, Number(e.target.value) || 0)))} className="w-24 px-2 py-1 border rounded" />
+            <Button onClick={() => buildEstate(estateTarget)} disabled={!gameState.awaiting_action || me.id === 'bot' || me.coins < 500} variant="outline">建設(500)</Button>
+          </div>
+        </div>
+      )
+    }
+    return null
+  }
+
+  const eventTitle = (() => {
+    if (!gameState) return ''
+    const me = gameState.players[gameState.current_player]
+    const sq = gameState.board[me.position]
+    if (sq.is_market) return '株式取引所'
+    if (sq.is_farm) return '農場バザー'
+    if (sq.is_estate) return '不動産'
+    return ''
+  })()
+
+  const eventDescription = (() => {
+    if (!gameState) return undefined
+    const me = gameState.players[gameState.current_player]
+    const sq = gameState.board[me.position]
+    if (sq.is_market) return 'ここで株を売買できます。'
+    if (sq.is_farm) return '作物をまとめて売却できます。'
+    if (sq.is_estate) return '指定マスに建設して収入を得ましょう。'
+    return undefined
+  })()
 
   const endTurn = async () => {
     if (!gameId) return
@@ -376,6 +469,10 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-green-100 to-blue-100 p-4">
+      <EventStage3D open={showEventStage && !gameState?.minigame} onClose={() => setShowEventStage(false)} title={eventTitle} description={eventDescription} panel={renderEventPanel()} kind={currentSquare.is_market ? 'market' : currentSquare.is_farm ? 'farm' : currentSquare.is_estate ? 'estate' : 'market'} />
+      {gameState?.minigame && (gameState.minigame as any)?.type === 'rpg' && (
+        <EventStage3D open={true} backgroundOnly kind="battle" />
+      )}
       {/* Hamburger button */}
       <button
         onClick={() => setShowStatus(true)}
@@ -539,7 +636,7 @@ function App() {
                   </Button>
                 ))}
               </div>
-              <Button onClick={plantCrop} disabled={!!currentSquare.crop || currentPlayer.coins < 20} className="w-full bg-green-600 hover:bg-green-700">
+              <Button onClick={plantCrop} disabled={!!currentSquare.crop || currentPlayer.coins < 20 || currentPlayer.position === 0 || currentSquare.is_market || currentSquare.is_farm || currentSquare.is_estate} className="w-full bg-green-600 hover:bg-green-700">
                 植える（20コイン）
               </Button>
             </CardContent>
@@ -643,3 +740,4 @@ function App() {
 }
 
 export default App
+
