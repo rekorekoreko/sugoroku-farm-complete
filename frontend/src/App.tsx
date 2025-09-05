@@ -4,6 +4,9 @@ import EventLog from '@/components/EventLog'
 import InvaderDuel from '@/components/InvaderDuel'
 import BattleRPG from '@/components/BattleRPG'
 import EventStage3D from '@/components/EventStage3D'
+import Board3D from '@/components/Board3D'
+// import HybridBattle from '@/components/HybridBattle'
+import FPSBattle from '@/components/FPSBattle'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Dice1, Dice2, Dice3, Dice4, Dice5, Dice6, Sprout, Wheat, Carrot, Apple, Coins, Menu, X, User, Bot as BotIcon } from 'lucide-react'
@@ -59,6 +62,9 @@ interface GameState {
   crop_changes?: Record<string, number>
   bazaar_offer_price?: number
   minigame?: any
+  game_over?: boolean
+  final_assets?: Record<string, number>
+  winner?: string | null
 }
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
@@ -74,6 +80,7 @@ function App() {
   const [displayPositions, setDisplayPositions] = useState<number[] | null>(null)
   const [showStatus, setShowStatus] = useState(false)
   const [showEventStage, setShowEventStage] = useState(false)
+  const [showNextStagePrompt, setShowNextStagePrompt] = useState(false)
   const minigameReadySent = useRef(false)
 
   const createGame = async () => {
@@ -177,7 +184,17 @@ function App() {
       if (!gameId || !gameState || !gameState.minigame) return
       if (minigameReadySent.current) return
       try {
-        await fetch(`${API_BASE}/game/${gameId}/minigame/ready`, { method: 'POST' })
+        let res: Response
+        if ((gameState.minigame as any)?.type === 'rpg') {
+          // upgrade to hybrid on battle square
+          res = await fetch(`${API_BASE}/game/${gameId}/minigame/hybrid/start`, { method: 'POST' })
+        } else {
+          res = await fetch(`${API_BASE}/game/${gameId}/minigame/ready`, { method: 'POST' })
+        }
+        try {
+          const data = await res.json()
+          if (data?.game_state) setGameState(data.game_state)
+        } catch {}
       } catch {}
       minigameReadySent.current = true
     })()
@@ -196,6 +213,9 @@ function App() {
     try {
       const res = await fetch(`${API_BASE}/game/${gameId}/minigame/resolve?winner=${winner}`, { method: 'POST' })
       const data = await res.json()
+      if (data?.events && Array.isArray(data.events)) {
+        setEventMessages(prev => [...prev, ...data.events])
+      }
       setGameState(data.game_state)
     } catch (e) {
       console.error('Failed to resolve minigame:', e)
@@ -224,6 +244,27 @@ function App() {
     const shouldOpen = isEvent && me.id !== 'bot' && !!gameState.awaiting_action
     setShowEventStage(shouldOpen)
   }, [gameState?.current_player, gameState?.awaiting_action, gameState?.turn])
+
+  // show next-stage prompt when the game is cleared
+  useEffect(() => {
+    if (!gameState) return
+    if (gameState.game_over) {
+      setShowNextStagePrompt(true)
+    }
+  }, [gameState?.game_over])
+
+  const goToNextStage = async () => {
+    if (!gameId) return
+    try {
+      const res = await fetch(`${API_BASE}/game/${gameId}/next-stage`, { method: 'POST' })
+      const data = await res.json()
+      setGameState(data.game_state)
+      setEventMessages(prev => ['次のステージへ進みました（40マス・3Dマップ）', ...prev])
+      setShowNextStagePrompt(false)
+    } catch (e) {
+      console.error('Failed to go to next stage:', e)
+    }
+  }
 
   // panels for each event
   const renderEventPanel = () => {
@@ -277,7 +318,7 @@ function App() {
           <div className="text-xs text-gray-600">イベントマス以外に建設できます（500コイン）</div>
           <div className="flex items-center gap-2">
             <label className="text-xs text-gray-600">建設マスID</label>
-            <input type="number" min={0} max={19} value={estateTarget} onChange={(e) => setEstateTarget(Math.max(0, Math.min(19, Number(e.target.value) || 0)))} className="w-24 px-2 py-1 border rounded" />
+            <input type="number" min={0} max={Math.max(0, (gameState?.board?.length ?? 1) - 1)} value={estateTarget} onChange={(e) => setEstateTarget(Math.max(0, Math.min(Math.max(0, (gameState?.board?.length ?? 1) - 1), Number(e.target.value) || 0)))} className="w-24 px-2 py-1 border rounded" />
             <Button onClick={() => buildEstate(estateTarget)} disabled={!gameState.awaiting_action || me.id === 'bot' || me.coins < 500} variant="outline">建設(500)</Button>
           </div>
         </div>
@@ -469,9 +510,13 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-green-100 to-blue-100 p-4">
+      {/* Stage 2 (40 tiles): render an embedded 3D sugoroku board, hide 2D grid */}
       <EventStage3D open={showEventStage && !gameState?.minigame} onClose={() => setShowEventStage(false)} title={eventTitle} description={eventDescription} panel={renderEventPanel()} kind={currentSquare.is_market ? 'market' : currentSquare.is_farm ? 'farm' : currentSquare.is_estate ? 'estate' : 'market'} />
       {gameState?.minigame && (gameState.minigame as any)?.type === 'rpg' && (
         <EventStage3D open={true} backgroundOnly kind="battle" />
+      )}
+      {gameState?.minigame && (gameState.minigame as any)?.type === 'hybrid' && (
+        <FPSBattle gameId={gameId!} apiBase={API_BASE} onUpdate={(gs) => setGameState(gs)} />
       )}
       {/* Hamburger button */}
       <button
@@ -526,13 +571,29 @@ function App() {
         </div>
       )}
       {gameState?.minigame && gameState.players[gameState.current_player]?.id !== 'bot' && (
-        gameState.minigame.type === 'rpg' ? (
+        (gameState.minigame as any).type === 'rpg' ? (
           <BattleRPG minigame={gameState.minigame} onAttack={battleAttack} />
-        ) : (
+        ) : (gameState.minigame as any).type === 'hybrid' ? null : (
+          // fallback: invader duel only when minigame has no type (legacy invader)
           <InvaderDuel onFinish={onFinishMinigame} />
         )
       )}
       <div className="max-w-6xl mx-auto">
+        {/* Game Clear -> Next Stage prompt */}
+        {showNextStagePrompt && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+            <div className="bg-white rounded-xl shadow-2xl w-[520px] max-w-[92vw] p-6 text-center space-y-4">
+              <div className="text-2xl font-bold">ゲームクリア！</div>
+              {gameState?.winner && (
+                <div className="text-sm text-gray-600">勝者: {gameState.winner}</div>
+              )}
+              {gameState?.final_assets && (
+                <div className="text-xs text-gray-500">集計完了。次のステージで再挑戦しよう！</div>
+              )}
+              <Button onClick={goToNextStage} className="w-full bg-green-600 hover:bg-green-700">次のステージへ（3D・40マス）</Button>
+            </div>
+          </div>
+        )}
         <div className="text-center mb-6">
           <h1 className="text-3xl font-bold text-green-800 mb-2">Leko</h1>
           <div className="flex justify-center items-center gap-4 text-lg">
@@ -547,7 +608,22 @@ function App() {
 
         <EventLog events={eventMessages} turn={gameState.turn} />
 
-        <div className="grid grid-cols-10 gap-2 mb-6 p-4 bg-white rounded-lg shadow-lg">
+        {/* Stage 2: embedded 3D sugoroku scene */}
+        {(gameState?.board?.length ?? 20) === 40 && (
+          <div className="mb-6">
+            <div className="w-full h-[520px] rounded-xl overflow-hidden shadow-lg bg-slate-900/30">
+              <Board3D
+                players={gameState.players.map((p, idx) => ({ id: p.id, position: (displayPositions ? displayPositions[idx] : p.position) }))}
+                tiles={40}
+                squares={gameState.board as any}
+                className="w-full h-[520px]"
+              />
+            </div>
+          </div>
+        )}
+
+        {(gameState?.board?.length ?? 20) !== 40 && (
+        <div className={`grid ${ (gameState?.board?.length ?? 20) >= 40 ? 'grid-cols-8' : (gameState?.board?.length ?? 20) >= 20 ? 'grid-cols-10' : 'grid-cols-6' } gap-2 mb-6 p-4 bg-white rounded-lg shadow-lg`}>
           {gameState.board.map((square, index) => (
             <div
               key={square.id}
@@ -596,6 +672,7 @@ function App() {
             </div>
           ))}
         </div>
+        )}
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <Card>
@@ -636,7 +713,7 @@ function App() {
                   </Button>
                 ))}
               </div>
-              <Button onClick={plantCrop} disabled={!!currentSquare.crop || currentPlayer.coins < 20 || currentPlayer.position === 0 || currentSquare.is_market || currentSquare.is_farm || currentSquare.is_estate} className="w-full bg-green-600 hover:bg-green-700">
+              <Button onClick={plantCrop} disabled={!!currentSquare.crop || currentPlayer.coins < 20 || currentPlayer.position === 0 || currentSquare.is_market || currentSquare.is_farm || currentSquare.is_estate || (currentSquare as any).is_battle} className="w-full bg-green-600 hover:bg-green-700">
                 植える（20コイン）
               </Button>
             </CardContent>
@@ -726,7 +803,7 @@ function App() {
                   <div className="text-xs text-center text-gray-600">イベントマス以外に建設できます（500コイン）</div>
                   <div className="flex items-center gap-2">
                     <label className="text-xs text-gray-600">建設マスID</label>
-                    <input type="number" min={0} max={19} value={estateTarget} onChange={(e) => setEstateTarget(Math.max(0, Math.min(19, Number(e.target.value) || 0)))} className="w-20 px-2 py-1 border rounded" />
+                    <input type="number" min={0} max={Math.max(0, (gameState?.board?.length ?? 1) - 1)} value={estateTarget} onChange={(e) => setEstateTarget(Math.max(0, Math.min(Math.max(0, (gameState?.board?.length ?? 1) - 1), Number(e.target.value) || 0)))} className="w-20 px-2 py-1 border rounded" />
                     <Button onClick={() => buildEstate(estateTarget)} disabled={!gameState.awaiting_action || currentPlayer.id === 'bot' || currentPlayer.coins < 500} variant="outline">建設（500）</Button>
                   </div>
                 </div>
@@ -740,4 +817,8 @@ function App() {
 }
 
 export default App
+
+
+
+
 

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import ResultOverlay from '@/components/ResultOverlay'
 
 type Winner = 'player' | 'bot'
 
@@ -14,6 +15,7 @@ export default function InvaderDuel({ onFinish, width = 420, height = 320 }: Pro
   const [phase, setPhase] = useState<'countdown' | 'playing'>('countdown')
   const phaseRef = useRef<'countdown' | 'playing'>('countdown')
   const overlayTextRef = useRef<string>('3')
+  const [result, setResult] = useState<Winner | null>(null)
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -153,6 +155,12 @@ export default function InvaderDuel({ onFinish, width = 420, height = 320 }: Pro
             e.hp = (e.hp ?? 1) - 1
             if (e.hp <= 0) {
               e.alive = false
+              // win when all dead
+              if (!enemies.some(en => en.alive)) {
+                running = false
+                setResult('player')
+                setTimeout(() => onFinish('player'), 900)
+              }
             }
             b.y = -9999
             break
@@ -166,7 +174,8 @@ export default function InvaderDuel({ onFinish, width = 420, height = 320 }: Pro
           player.lives -= 1
           if (player.lives <= 0) {
             running = false
-            onFinish('bot')
+            setResult('bot')
+            setTimeout(() => onFinish('bot'), 900)
             return
           }
         }
@@ -261,6 +270,7 @@ export default function InvaderDuel({ onFinish, width = 420, height = 320 }: Pro
         </div>
         <div className="text-center text-xs text-gray-600 mt-2">Arrow/A D = Move, Space = Fire</div>
       </div>
+      {result && <ResultOverlay type={result === 'player' ? 'win' : 'lose'} />}
     </div>
   )
 }

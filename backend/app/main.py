@@ -66,6 +66,10 @@ class GameState(BaseModel):
     crop_changes: Dict[str, int] = {}
     bazaar_offer_price: Optional[int] = None
     minigame: Optional[Dict[str, Any]] = None
+    # game-end (30 turns) summary
+    game_over: bool = False
+    final_assets: Optional[Dict[str, int]] = None
+    winner: Optional[str] = None
 
 app = FastAPI()
 
@@ -78,16 +82,31 @@ app.add_middleware(
 )
 
 
-def create_board() -> List[Square]:
-    board = [Square(id=i) for i in range(20)]
-    if len(board) > 5:
+def create_board(size: int = 20) -> List[Square]:
+    board = [Square(id=i) for i in range(size)]
+    # place events on first loop
+    if size > 5:
         board[5].is_market = True
-    if len(board) > 10:
+    if size > 10:
         board[10].is_farm = True
-    if len(board) > 14:
+    if size > 12:
+        board[12].is_farm = True
+    if size > 14:
         board[14].is_battle = True
-    if len(board) > 15:
+    if size > 15:
         board[15].is_estate = True
+    # place mirrored events for large boards (40 etc.)
+    if size >= 36:
+        if size > 25:
+            board[25 % size].is_market = True
+        if size > 30:
+            board[30 % size].is_farm = True
+        if size > 32:
+            board[32 % size].is_farm = True
+        if size > 34:
+            board[34 % size].is_battle = True
+        if size > 35:
+            board[35 % size].is_estate = True
     return board
 
 
@@ -124,7 +143,7 @@ async def create_game(player_name: str):
     state = GameState(
         players=[p1, bot],
         current_player=0,
-        board=create_board(),
+        board=create_board(20),
         turn=1,
         awaiting_action=False,
         stock_price=80,
@@ -150,6 +169,9 @@ async def roll_dice(game_id: str):
         raise HTTPException(status_code=404, detail="Game not found")
 
     game = games[game_id]
+    # prevent further play after game over
+    if getattr(game, 'game_over', False):
+        raise HTTPException(status_code=400, detail="Game is over")
     events: List[str] = []
 
     current = game.players[game.current_player]
@@ -281,10 +303,9 @@ async def roll_dice(game_id: str):
             current.coins += income
             events.append(f"{current.name}: 建物の収益 +{income}コイン（{bcnt}棟）")
 
-    # bazaar offer: if on farm and every 3 turns for that player
-    if stop_sq.is_farm and turns_for_player % 3 == 0:
-        game.bazaar_offer_price = random.randint(10, 300)
-        events.append(f"バイヤーが{game.bazaar_offer_price}ゴールドで買い取り希望！")
+    # bazaar offer: always present when on farm (fixed presence)
+    if stop_sq.is_farm:
+        game.bazaar_offer_price = random.randint(50, 200)
     else:
         game.bazaar_offer_price = None
 
@@ -314,6 +335,36 @@ async def roll_dice(game_id: str):
     else:
         # human action phase
         game.awaiting_action = True
+
+    # 30-turn settlement: compute total assets and declare winner
+    if game.turn >= 30:
+        def total_assets(p: Player) -> int:
+            coins = p.coins
+            stocks = getattr(p, 'stocks_shares', 0) * game.stock_price
+            inv = 0
+            try:
+                for k, v in (p.inventory or {}).items():
+                    inv += int(v) * int(game.crop_prices.get(k, 0))
+            except Exception:
+                pass
+            return int(coins) + int(stocks) + int(inv)
+
+        totals: Dict[str, int] = {}
+        for p in game.players:
+            totals[p.id] = total_assets(p)
+            events.append(f"{p.name} の資産: {totals[p.id]}")
+        # determine winner (highest total), handle tie
+        sorted_players = sorted(game.players, key=lambda x: totals.get(x.id, 0), reverse=True)
+        if len(sorted_players) >= 2 and totals.get(sorted_players[0].id, 0) == totals.get(sorted_players[1].id, 0):
+            win_name = "引き分け"
+        else:
+            win_name = sorted_players[0].name if sorted_players else None
+        if win_name:
+            events.append(f"勝者: {win_name}")
+        game.game_over = True
+        game.awaiting_action = False
+        game.final_assets = totals
+        game.winner = win_name
 
     # Always return the dice rolled for this call so clients can animate correctly
     return {"game_state": game, "events": events, "dice_value": dice}
@@ -446,8 +497,21 @@ async def minigame_resolve(game_id: str, winner: str = "attacker"):
         # 勝者が挑まれた側（防御側）の場合: 50コイン獲得
         if defender:
             defender.coins += 50
+    # build reward logs for invader minigame result
+    events: List[str] = []
+    if winner == "attacker":
+        if attacker and defender:
+            events.append(f"インベーダー勝利: {attacker.name} がマス{sq.id}を奪取！")
+            events.append(f"{defender.name}: 作物マスを失った……")
+        else:
+            events.append(f"インベーダー勝利: マス{sq.id}を奪取！")
+    else:
+        if defender:
+            events.append(f"防衛成功: {defender.name} は+50コインの報酬！")
+        if attacker:
+            events.append(f"{attacker.name}: 作物マスを奪えなかった……")
     game.minigame = None
-    return {"message": "minigame resolved", "game_state": game}
+    return {"message": "minigame resolved", "game_state": game, "events": events}
 
 
 @app.post("/game/{game_id}/minigame/rpg/act")
@@ -499,6 +563,151 @@ async def rpg_minigame_act(game_id: str, action: str = "attack"):
     return {"message": "turn resolved", "game_state": game}
 
 
+@app.post("/game/{game_id}/minigame/hybrid/start")
+async def hybrid_minigame_start(game_id: str):
+    if game_id not in games:
+        raise HTTPException(status_code=404, detail="Game not found")
+    game = games[game_id]
+    p = game.players[game.current_player]
+    sq = game.board[p.position]
+    if not getattr(sq, 'is_battle', False):
+        raise HTTPException(status_code=400, detail="Not on battle square")
+    # create/convert to hybrid encounter
+    enemy_pool = [
+        {"name": "スライム", "hp": random.randint(10, 14), "dodge": 0.35},
+        {"name": "ゴブリン", "hp": random.randint(12, 16), "dodge": 0.45},
+        {"name": "影の戦士", "hp": random.randint(14, 18), "dodge": 0.6},
+    ]
+    foe = random.choice(enemy_pool)
+    game.minigame = {
+        "type": "hybrid",
+        "status": "moving",
+        "player_id": p.id,
+        "player_hp": 15,
+        "player_guard": 0,
+        "player_evade": 0,
+        "enemy": {"name": foe["name"], "hp": foe["hp"], "max_hp": foe["hp"], "dodge": foe["dodge"]},
+        "created_turn": game.turn,
+        "log": [f"{foe['name']} が あらわれた！"],
+    }
+    return {"message": "hybrid ready", "game_state": game, "minigame": game.minigame}
+
+
+@app.post("/game/{game_id}/minigame/hybrid/command")
+async def hybrid_minigame_command(game_id: str, action: str = "attack"):
+    if game_id not in games:
+        raise HTTPException(status_code=404, detail="Game not found")
+    game = games[game_id]
+    mg = game.minigame
+    if not mg or mg.get("type") != "hybrid":
+        raise HTTPException(status_code=404, detail="No hybrid minigame")
+    p = game.players[game.current_player]
+    if p.id != mg.get("player_id"):
+        raise HTTPException(status_code=400, detail="Not your turn for minigame")
+
+    log = mg.setdefault("log", [])
+    enemy = mg["enemy"]
+    # apply player's command
+    act = (action or "attack").lower()
+    dmg = 0
+    hit = True
+    if act == "attack":
+        # base acc 80%, enemy may dodge
+        if random.random() < 0.8 and random.random() > float(enemy.get("dodge", 0.3)):
+            dmg = random.randint(3, 6)
+        else:
+            hit = False
+    elif act == "heavy":
+        # heavy: acc 60%, big damage
+        if random.random() < 0.6 and random.random() > float(enemy.get("dodge", 0.3)):
+            dmg = random.randint(5, 9)
+        else:
+            hit = False
+    elif act == "defend":
+        mg["player_guard"] = 1
+        log.append("防御体勢をとった！")
+    elif act == "dodge":
+        mg["player_evade"] = 1
+        log.append("身をひらりとかわす構え！")
+    else:
+        raise HTTPException(status_code=400, detail="Invalid action")
+
+    if dmg > 0 and hit:
+        enemy["hp"] = max(0, int(enemy["hp"]) - dmg)
+        log.append(f"攻撃が命中！ {dmg} ダメージ")
+    elif act in ("attack", "heavy"):
+        log.append("相手は華麗に回避した！")
+
+    # check victory
+    if int(enemy["hp"]) <= 0:
+        p.coins += 50
+        game.minigame = None
+        game.awaiting_action = False
+        game.current_player = (game.current_player + 1) % len(game.players)
+        return {"message": "victory", "game_state": game}
+
+    # enemy's turn (dodge-aware AI)
+    # choose action: high accuracy attack, or feint vs guard/dodge
+    edmg = 0
+    # if player is guarding, prefer heavy; if player is evading, prefer faint/normal
+    if mg.get("player_guard"):
+        # break guard with heavier hit
+        if random.random() < 0.7:
+            edmg = random.randint(4, 7)
+        else:
+            edmg = random.randint(2, 5)
+    else:
+        edmg = random.randint(2, 5)
+
+    # apply player buffs
+    if mg.get("player_guard"):
+        edmg = max(0, edmg - 2)
+    if mg.get("player_evade") and random.random() < 0.6:
+        edmg = 0
+
+    if edmg > 0:
+        mg["player_hp"] = max(0, int(mg["player_hp"]) - edmg)
+        log.append(f"{enemy['name']} の攻撃！ {edmg} ダメージ")
+    else:
+        log.append(f"{enemy['name']} の攻撃をうまくかわした！")
+
+    # clear temporary buffs
+    mg["player_guard"] = 0
+    mg["player_evade"] = 0
+
+    if int(mg["player_hp"]) <= 0:
+        loss = min(p.coins, 30)
+        p.coins -= loss
+        game.minigame = None
+        game.awaiting_action = False
+        game.current_player = (game.current_player + 1) % len(game.players)
+        return {"message": "defeat", "game_state": game}
+
+    mg["status"] = "moving"
+    return {"message": "turn resolved", "game_state": game}
+
+
+@app.post("/game/{game_id}/next-stage")
+async def next_stage(game_id: str):
+    if game_id not in games:
+        raise HTTPException(status_code=404, detail="Game not found")
+    game = games[game_id]
+    # reset board to 40 tiles, keep players' assets
+    game.board = create_board(40)
+    game.turn = 1
+    game.current_player = 0
+    game.awaiting_action = False
+    game.dice_value = None
+    game.bazaar_offer_price = None
+    game.minigame = None
+    game.game_over = False
+    game.final_assets = None
+    game.winner = None
+    # reset positions
+    for p in game.players:
+        p.position = 0
+    return {"message": "next stage", "game_state": game}
+
 @app.post("/game/{game_id}/plant-crop")
 async def plant_crop(game_id: str, crop_type: CropType):
     if game_id not in games:
@@ -508,7 +717,7 @@ async def plant_crop(game_id: str, crop_type: CropType):
     sq = game.board[p.position]
 
     # forbid planting on special tiles and start tile (0)
-    if sq.is_market or sq.is_farm or sq.is_estate or p.position == 0:
+    if sq.is_market or sq.is_farm or sq.is_estate or getattr(sq, 'is_battle', False) or p.position == 0:
         raise HTTPException(status_code=400, detail="Cannot plant on event square")
     if sq.crop is not None:
         raise HTTPException(status_code=400, detail="Square already has a crop")
