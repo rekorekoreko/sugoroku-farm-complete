@@ -34,6 +34,7 @@ class Square(BaseModel):
     is_farm: bool = False    # 10
     is_estate: bool = False  # 15
     is_battle: bool = False  # 14
+    is_mine: bool = False    # 17
     building_owner: Optional[str] = None
     # AI story overlay (temporary special squares)
     is_story: bool = False
@@ -95,6 +96,8 @@ def create_board(size: int = 20) -> List[Square]:
         board[14].is_battle = True
     if size > 15:
         board[15].is_estate = True
+    if size > 17:
+        board[17].is_mine = True
     # place mirrored events for large boards (40 etc.)
     if size >= 36:
         if size > 25:
@@ -107,6 +110,8 @@ def create_board(size: int = 20) -> List[Square]:
             board[34 % size].is_battle = True
         if size > 35:
             board[35 % size].is_estate = True
+        if size > 37:
+            board[37 % size].is_mine = True
     return board
 
 
@@ -203,9 +208,12 @@ async def roll_dice(game_id: str):
         stop_sq.owner = None
         events.append(f"{current.name}: {key} を{qty}個収穫（自動）")
 
-    # invader minigame: landing on opponent crop triggers 1v1
+    # invader minigame: landing on opponent crop on a normal (non-event) square triggers 1v1
     stop_sq = game.board[current.position]
-    if stop_sq.crop and stop_sq.owner and stop_sq.owner != current.id:
+    if (
+        stop_sq.crop and stop_sq.owner and stop_sq.owner != current.id and
+        not (stop_sq.is_market or stop_sq.is_farm or stop_sq.is_estate or getattr(stop_sq, 'is_battle', False) or getattr(stop_sq, 'is_mine', False))
+    ):
         attacker_id = current.id
         defender_id = stop_sq.owner
         if attacker_id == "bot" and False:
@@ -260,6 +268,39 @@ async def roll_dice(game_id: str):
                 loss = min(current.coins, 20)
                 current.coins -= loss
                 events.append(f"BOTは逃げ出した…（-{loss}コイン）")
+
+    # Mining tile: start mining minigame (independent from main coins)
+    stop_sq = game.board[current.position]
+    if getattr(stop_sq, 'is_mine', False):
+        if current.id != "bot":
+            kinds = [
+                ("diamond", 50, 2),
+                ("emerald", 40, 3),
+                ("sapphire", 30, 4),
+                ("topaz", 20, 5),
+                ("iron", 10, 8),
+                ("stone", 0, 24),
+            ]
+            field: List[Dict[str, Any]] = []
+            bid = 0
+            for name, val, count in kinds:
+                for _ in range(count):
+                    field.append({"id": bid, "kind": name, "value": val, "mined": False})
+                    bid += 1
+            random.shuffle(field)
+            game.minigame = {
+                "type": "mining",
+                "status": "playing",
+                "player_id": current.id,
+                "created_turn": game.turn,
+                "score": 0,
+                "field": field,
+                "time_limit": 60,
+            }
+            events.append("採掘ミニゲーム: ブロックを掘ってスコアを稼ごう！")
+        else:
+            score = sum(random.choice([0, 10, 20, 30, 40, 50]) for _ in range(5))
+            events.append(f"BOTは採掘を行い、仮スコア {score} を記録した！")
 
     # stock price change (clamp 10..300)
     old = game.stock_price
@@ -687,6 +728,50 @@ async def hybrid_minigame_command(game_id: str, action: str = "attack"):
     return {"message": "turn resolved", "game_state": game}
 
 
+@app.post("/game/{game_id}/minigame/mining/dig")
+async def mining_dig(game_id: str, block_id: int):
+    if game_id not in games:
+        raise HTTPException(status_code=404, detail="Game not found")
+    game = games[game_id]
+    mg = game.minigame
+    if not mg or mg.get("type") != "mining":
+        raise HTTPException(status_code=404, detail="No mining minigame")
+    p = game.players[game.current_player]
+    if p.id != mg.get("player_id"):
+        raise HTTPException(status_code=400, detail="Not your mining turn")
+    field = mg.get("field") or []
+    try:
+        b = next((b for b in field if int(b.get("id")) == int(block_id)), None)
+    except Exception:
+        b = None
+    if not b:
+        raise HTTPException(status_code=400, detail="Invalid block id")
+    if b.get("mined"):
+        return {"message": "already mined", "game_state": game, "minigame": mg}
+    b["mined"] = True
+    val = int(b.get("value", 0))
+    mg["score"] = int(mg.get("score", 0)) + val
+    # return without altering main coins
+    return {"message": "dug", "gained": val, "game_state": game, "minigame": mg}
+
+
+@app.post("/game/{game_id}/minigame/mining/finish")
+async def mining_finish(game_id: str):
+    if game_id not in games:
+        raise HTTPException(status_code=404, detail="Game not found")
+    game = games[game_id]
+    mg = game.minigame
+    if not mg or mg.get("type") != "mining":
+        raise HTTPException(status_code=404, detail="No mining minigame")
+    # clear minigame and pass to next player; coins unaffected
+    score = int(mg.get("score", 0))
+    player_name = next((pl.name for pl in game.players if pl.id == mg.get("player_id")), None)
+    events = [f"採掘終了: {player_name or 'Player'} のスコア {score}"]
+    game.minigame = None
+    game.awaiting_action = False
+    game.current_player = (game.current_player + 1) % len(game.players)
+    return {"message": "mining finished", "game_state": game, "events": events}
+
 @app.post("/game/{game_id}/next-stage")
 async def next_stage(game_id: str):
     if game_id not in games:
@@ -717,7 +802,7 @@ async def plant_crop(game_id: str, crop_type: CropType):
     sq = game.board[p.position]
 
     # forbid planting on special tiles and start tile (0)
-    if sq.is_market or sq.is_farm or sq.is_estate or getattr(sq, 'is_battle', False) or p.position == 0:
+    if sq.is_market or sq.is_farm or sq.is_estate or getattr(sq, 'is_battle', False) or getattr(sq, 'is_mine', False) or p.position == 0:
         raise HTTPException(status_code=400, detail="Cannot plant on event square")
     if sq.crop is not None:
         raise HTTPException(status_code=400, detail="Square already has a crop")

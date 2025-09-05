@@ -1,5 +1,5 @@
 import { Canvas } from '@react-three/fiber'
-import { OrbitControls, Text } from '@react-three/drei'
+import { OrbitControls, Text, Billboard } from '@react-three/drei'
 
 type Props = {
   players: { id: string; position: number }[]
@@ -9,6 +9,7 @@ type Props = {
     is_farm?: boolean
     is_estate?: boolean
     is_battle?: boolean
+    is_mine?: boolean
     building_owner?: string | null
     owner?: string | null
     crop?: any
@@ -27,9 +28,10 @@ export default function Board3D({ players, tiles, squares = [], className }: Pro
     const isFarm = !!sq.is_farm
     const isEstate = !!sq.is_estate
     const isBattle = !!(sq as any).is_battle
+    const isMine = !!(sq as any).is_mine
     const hasCrop = !!sq.crop
     const baseColor = i % 5 === 0 ? '#52525b' : '#3f3f46'
-    const eventColor = isMarket ? '#7c3aed' : isFarm ? '#f59e0b' : isEstate ? '#4f46e5' : isBattle ? '#ef4444' : null
+    const eventColor = isMarket ? '#7c3aed' : isFarm ? '#f59e0b' : isEstate ? '#4f46e5' : isBattle ? '#ef4444' : isMine ? '#14b8a6' : null
     const ownerColor = (sq.building_owner || sq.owner) === 'bot' ? '#ef4444' : (sq.building_owner || sq.owner) ? '#60a5fa' : null
     return (
       <group key={i} position={[x, 0, z]} rotation={[0, -a, 0]}>
@@ -59,22 +61,37 @@ export default function Board3D({ players, tiles, squares = [], className }: Pro
             <meshStandardMaterial color="#22c55e" />
           </mesh>
         )}
-        {/* tile number */}
-        <Text position={[0, 0.32, 0]} fontSize={0.14} color="#e5e7eb" anchorX="center" anchorY="middle">
-          {String(i)}
-        </Text>
-        {/* event icon as text */}
+        {/* tile number (always face camera) */}
+        <Billboard position={[0, 0.6, 0]} follow>
+          <Text fontSize={0.14} color="#e5e7eb" anchorX="center" anchorY="middle" outlineWidth={0.02} outlineColor="#000000">
+            {String(i)}
+          </Text>
+        </Billboard>
+        {/* event icon as text (always face camera) */}
         {isMarket && (
-          <Text position={[0, 0.42, 0.06]} fontSize={0.12} color="#c4b5fd" anchorX="center" anchorY="middle">市</Text>
+          <Billboard position={[0, 0.8, 0.08]} follow>
+            <Text fontSize={0.12} color="#c4b5fd" anchorX="center" anchorY="middle" outlineWidth={0.01} outlineColor="#111827">市</Text>
+          </Billboard>
         )}
         {isFarm && (
-          <Text position={[0, 0.42, 0.06]} fontSize={0.12} color="#fcd34d" anchorX="center" anchorY="middle">田</Text>
+          <Billboard position={[0, 0.8, 0.08]} follow>
+            <Text fontSize={0.12} color="#fcd34d" anchorX="center" anchorY="middle" outlineWidth={0.01} outlineColor="#111827">田</Text>
+          </Billboard>
         )}
         {isEstate && (
-          <Text position={[0, 0.42, 0.06]} fontSize={0.12} color="#a5b4fc" anchorX="center" anchorY="middle">館</Text>
+          <Billboard position={[0, 0.8, 0.08]} follow>
+            <Text fontSize={0.12} color="#a5b4fc" anchorX="center" anchorY="middle" outlineWidth={0.01} outlineColor="#111827">館</Text>
+          </Billboard>
         )}
         {isBattle && (
-          <Text position={[0, 0.42, 0.06]} fontSize={0.12} color="#fca5a5" anchorX="center" anchorY="middle">闘</Text>
+          <Billboard position={[0, 0.8, 0.08]} follow>
+            <Text fontSize={0.12} color="#fca5a5" anchorX="center" anchorY="middle" outlineWidth={0.01} outlineColor="#111827">闘</Text>
+          </Billboard>
+        )}
+        {isMine && (
+          <Billboard position={[0, 0.8, 0.08]} follow>
+            <Text fontSize={0.12} color="#5eead4" anchorX="center" anchorY="middle" outlineWidth={0.01} outlineColor="#111827">鉱</Text>
+          </Billboard>
         )}
       </group>
     )
@@ -104,12 +121,12 @@ export default function Board3D({ players, tiles, squares = [], className }: Pro
         {/* ground */}
         <mesh rotation={[-Math.PI/2, 0, 0]} position={[0, -0.06, 0]} receiveShadow>
           <circleGeometry args={[5.8, 72]} />
-          <meshStandardMaterial color="#0b0f14" />
+          <meshStandardMaterial color="#8b5a2b" />
         </mesh>
         {/* outer ring */}
         <mesh rotation={[-Math.PI/2, 0, 0]} position={[0, -0.05, 0]}>
           <ringGeometry args={[5.5, 5.7, 64]} />
-          <meshStandardMaterial color="#111827" />
+          <meshStandardMaterial color="#6b4423" />
         </mesh>
         {tileNodes}
         {tokens}

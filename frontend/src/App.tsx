@@ -7,6 +7,7 @@ import EventStage3D from '@/components/EventStage3D'
 import Board3D from '@/components/Board3D'
 // import HybridBattle from '@/components/HybridBattle'
 import FPSBattle from '@/components/FPSBattle'
+import FPSMining from '@/components/FPSMining'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Dice1, Dice2, Dice3, Dice4, Dice5, Dice6, Sprout, Wheat, Carrot, Apple, Coins, Menu, X, User, Bot as BotIcon } from 'lucide-react'
@@ -518,6 +519,9 @@ function App() {
       {gameState?.minigame && (gameState.minigame as any)?.type === 'hybrid' && (
         <FPSBattle gameId={gameId!} apiBase={API_BASE} onUpdate={(gs) => setGameState(gs)} />
       )}
+      {gameState?.minigame && (gameState.minigame as any)?.type === 'mining' && (
+        <FPSMining gameId={gameId!} apiBase={API_BASE} minigame={(gameState as any).minigame} onUpdate={(gs) => setGameState(gs)} />
+      )}
       {/* Hamburger button */}
       <button
         onClick={() => setShowStatus(true)}
@@ -573,7 +577,7 @@ function App() {
       {gameState?.minigame && gameState.players[gameState.current_player]?.id !== 'bot' && (
         (gameState.minigame as any).type === 'rpg' ? (
           <BattleRPG minigame={gameState.minigame} onAttack={battleAttack} />
-        ) : (gameState.minigame as any).type === 'hybrid' ? null : (
+        ) : (gameState.minigame as any).type === 'hybrid' ? null : (gameState.minigame as any).type === 'mining' ? null : (
           // fallback: invader duel only when minigame has no type (legacy invader)
           <InvaderDuel onFinish={onFinishMinigame} />
         )
