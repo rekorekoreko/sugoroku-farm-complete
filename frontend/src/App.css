@@ -1,3 +1,6 @@
+@import url('https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@500;700;900&display=swap');
+/* import a high-contrast, professional Japanese serif */
+
 #root {
   max-width: none;
   width: 100%;
@@ -41,8 +44,6 @@
 .read-the-docs {
   color: #888;
 }
-/* import a high-contrast, professional Japanese serif */
-@import url('https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@500;700;900&display=swap');
 
 html, body, #root {
   font-family: 'Noto Serif JP', ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;

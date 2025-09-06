@@ -512,12 +512,25 @@ function App() {
   return (
     <div className="min-h-screen bg-gradient-to-b from-green-100 to-blue-100 p-4">
       {/* Stage 2 (40 tiles): render an embedded 3D sugoroku board, hide 2D grid */}
-      <EventStage3D open={showEventStage && !gameState?.minigame} onClose={() => setShowEventStage(false)} title={eventTitle} description={eventDescription} panel={renderEventPanel()} kind={currentSquare.is_market ? 'market' : currentSquare.is_farm ? 'farm' : currentSquare.is_estate ? 'estate' : 'market'} />
+      <EventStage3D
+        open={showEventStage && !gameState?.minigame}
+        onClose={async () => {
+          setShowEventStage(false)
+          // Cancel event -> immediately pass turn to opponent
+          if (gameState?.awaiting_action && gameState.players[gameState.current_player]?.id !== 'bot') {
+            await endTurn()
+          }
+        }}
+        title={eventTitle}
+        description={eventDescription}
+        panel={renderEventPanel()}
+        kind={currentSquare.is_market ? 'market' : currentSquare.is_farm ? 'farm' : currentSquare.is_estate ? 'estate' : 'market'}
+      />
       {gameState?.minigame && (gameState.minigame as any)?.type === 'rpg' && (
         <EventStage3D open={true} backgroundOnly kind="battle" />
       )}
       {gameState?.minigame && (gameState.minigame as any)?.type === 'hybrid' && (
-        <FPSBattle gameId={gameId!} apiBase={API_BASE} onUpdate={(gs) => setGameState(gs)} />
+        <FPSBattle gameId={gameId!} apiBase={API_BASE} onUpdate={(gs) => setGameState(gs)} minigame={(gameState as any).minigame} />
       )}
       {gameState?.minigame && (gameState.minigame as any)?.type === 'mining' && (
         <FPSMining gameId={gameId!} apiBase={API_BASE} minigame={(gameState as any).minigame} onUpdate={(gs) => setGameState(gs)} />
@@ -821,6 +834,7 @@ function App() {
 }
 
 export default App
+
 
 
 

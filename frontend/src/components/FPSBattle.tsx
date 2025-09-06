@@ -7,6 +7,7 @@ type Props = {
   gameId: string
   apiBase: string
   onUpdate: (gs: any) => void
+  minigame?: any
 }
 
 function Arena() {
@@ -77,9 +78,8 @@ function PlayerController() {
   return null
 }
 
-export default function FPSBattle({ gameId, apiBase, onUpdate }: Props) {
+export default function FPSBattle({ gameId, apiBase, onUpdate, minigame }: Props) {
   const enemyRef = useRef<THREE.Mesh | null>(null)
-  const weaponWorldRef = useRef<THREE.Group | null>(null)
   const [distance, setDistance] = useState(12)
   const [locked, setLocked] = useState(false)
   const [cooldown, setCooldown] = useState(0)
@@ -88,9 +88,12 @@ export default function FPSBattle({ gameId, apiBase, onUpdate }: Props) {
   const [hitFlash, setHitFlash] = useState(0)
   const lockAtRef = useRef<number>(0)
   const muzzleRef = useRef<number>(0)
-  const [hasWeapon, setHasWeapon] = useState(false)
-  const [nearWeapon, setNearWeapon] = useState(false)
-  const [tracers, setTracers] = useState<Array<{ id:number; s:[number,number,number]; e:[number,number,number] }>>([])
+  const [isFiring, setIsFiring] = useState(false)
+  const lastFireAtRef = useRef<number>(0)
+  const [hasWeapon] = useState(true)
+  // weapon always equipped; no proximity logic needed
+  const [tracers, setTracers] = useState<Array<{ id:number; s:[number,number,number]; e:[number,number,number]; col?: string; w?: number; ttl?: number }>>([])
+  const [impacts, setImpacts] = useState<Array<{ id:number; p:[number,number,number] }>>([])
 
   // distance indicator vs enemy on ground plane
   const updateDistance = useCallback(() => {
@@ -108,21 +111,7 @@ export default function FPSBattle({ gameId, apiBase, onUpdate }: Props) {
     let raf = 0
     const tick = () => {
       updateDistance()
-      try {
-        // weapon proximity check (when not yet picked)
-        if (!hasWeapon) {
-          const cam = (window as any).__r3f?.root?.getState?.()?.camera as THREE.PerspectiveCamera | undefined
-          if (cam && (weaponWorldRef as any)?.current) {
-            const p = (weaponWorldRef as any).current.position as THREE.Vector3
-            const d = cam.position.distanceTo(p)
-            setNearWeapon(d < 1.2)
-          } else {
-            setNearWeapon(false)
-          }
-        } else {
-          setNearWeapon(false)
-        }
-      } catch {}
+      // no weapon pickup; always equipped
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
@@ -138,6 +127,18 @@ export default function FPSBattle({ gameId, apiBase, onUpdate }: Props) {
   }, [cooldown])
 
   useEffect(() => {
+    if (!locked || result || !isFiring) return
+    const iv = setInterval(() => {
+      const now = performance.now()
+      if (now - (lastFireAtRef.current || 0) >= 140) {
+        lastFireAtRef.current = now
+        shoot()
+      }
+    }, 40)
+    return () => clearInterval(iv)
+  }, [locked, result, isFiring])
+
+  useEffect(() => {
     const preventCtx = (e: MouseEvent) => e.preventDefault()
     const onMouseDown = (e: MouseEvent) => {
       if (!locked) return
@@ -147,10 +148,7 @@ export default function FPSBattle({ gameId, apiBase, onUpdate }: Props) {
         // ignore the first click used to lock the pointer
         return
       }
-      if (e.button === 0) {
-        // left click: shoot
-        shoot()
-      } else if (e.button === 2) {
+      if (e.button === 2) {
         // right click: scope
         setAim(true)
       }
@@ -158,6 +156,7 @@ export default function FPSBattle({ gameId, apiBase, onUpdate }: Props) {
     const onMouseUp = (e: MouseEvent) => {
       if (!locked) return
       if (e.button === 2) setAim(false)
+      if (e.button === 0) setIsFiring(false)
     }
     window.addEventListener('contextmenu', preventCtx)
     window.addEventListener('mousedown', onMouseDown)
@@ -177,20 +176,31 @@ export default function FPSBattle({ gameId, apiBase, onUpdate }: Props) {
       const p = Math.min(0.8, 0.15 + Math.max(0, 10 - distance) * 0.05)
       if (Math.random() < p) {
         setHitFlash(1)
-        setTimeout(() => setHitFlash(0), 120)
+        setTimeout(() => setHitFlash(0), 140)
+        try {
+          const cam = (window as any).__r3f?.root?.getState?.()?.camera as THREE.PerspectiveCamera | undefined
+          const enemy = enemyRef.current
+          if (cam && enemy) {
+            const start = enemy.position.clone().add(new THREE.Vector3(0, 0.9, 0))
+            const end = cam.position.clone().add(new THREE.Vector3(0, -0.05, 0))
+            const id2 = Math.random()
+            setTracers(t => [...t, { id: id2, s:[start.x,start.y,start.z], e:[end.x,end.y,end.z], col: '#f87171', w: 0.03, ttl: 240 }])
+            setTimeout(() => setTracers(t => t.filter(x => x.id !== id2)), 240)
+          }
+        } catch {}
       }
-    }, 1000)
+    }, 900)
     return () => clearInterval(id)
   }, [locked, distance])
 
   const shoot = async () => {
     if (!hasWeapon) return
-    if (cooldown > 0) return
-    setCooldown(5) // ~0.5s
+    // simple ROF limiter is handled by lastFireAtRef + interval
+    setCooldown(2)
     // muzzle flash visual
     muzzleRef.current = 1
     setTimeout(() => { muzzleRef.current = 0 }, 80)
-    // tracer visual
+    // tracer visual (brighter, thicker, longer)
     try {
       const cam = (window as any).__r3f?.root?.getState?.()?.camera as THREE.PerspectiveCamera
       if (cam) {
@@ -198,15 +208,21 @@ export default function FPSBattle({ gameId, apiBase, onUpdate }: Props) {
         const dir = new THREE.Vector3(); cam.getWorldDirection(dir)
         const ray = new THREE.Raycaster(origin, dir.normalize())
         let end = origin.clone().add(dir.clone().multiplyScalar(8))
+        let hitPoint: THREE.Vector3 | null = null
         if (enemyRef.current) {
           const hits = ray.intersectObject(enemyRef.current, true)
-          if (hits && hits.length > 0) end.copy(hits[0].point)
+          if (hits && hits.length > 0) { end.copy(hits[0].point); hitPoint = hits[0].point.clone() }
         }
         const right = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0,1,0)).multiplyScalar(-1)
         const start = origin.clone().add(dir.clone().multiplyScalar(0.2)).add(right.multiplyScalar(0.08)).add(new THREE.Vector3(0,-0.04,0))
         const id = Math.random()
-        setTracers(t => [...t, { id, s:[start.x,start.y,start.z], e:[end.x,end.y,end.z] }])
-        setTimeout(() => setTracers(t => t.filter(x => x.id !== id)), 120)
+        setTracers(t => [...t, { id, s:[start.x,start.y,start.z], e:[end.x,end.y,end.z], col: '#e6f3ff', w: 0.035, ttl: 220 }])
+        setTimeout(() => setTracers(t => t.filter(x => x.id !== id)), 220)
+        if (hitPoint) {
+          const iid = Math.random()
+          setImpacts(a => [...a, { id: iid, p: [hitPoint!.x, hitPoint!.y, hitPoint!.z] }])
+          setTimeout(() => setImpacts(a => a.filter(v => v.id !== iid)), 220)
+        }
       }
     } catch {}
     try {
@@ -238,7 +254,7 @@ export default function FPSBattle({ gameId, apiBase, onUpdate }: Props) {
     return null
   }
 
-  function Tracer({ s, e }: { s:[number,number,number]; e:[number,number,number] }) {
+  function Tracer({ s, e, col = '#f8fafc', w = 0.03 }: { s:[number,number,number]; e:[number,number,number]; col?: string; w?: number }) {
     const start = new THREE.Vector3().fromArray(s)
     const end = new THREE.Vector3().fromArray(e)
     const mid = start.clone().add(end).multiplyScalar(0.5)
@@ -248,9 +264,21 @@ export default function FPSBattle({ gameId, apiBase, onUpdate }: Props) {
     const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0), dir)
     return (
       <mesh position={[mid.x, mid.y, mid.z]} quaternion={quat}>
-        <cylinderGeometry args={[0.01, 0.01, Math.max(0.01, len), 6]} />
-        <meshStandardMaterial color="#f8fafc" emissive="#ffffff" emissiveIntensity={0.6} />
+        <cylinderGeometry args={[w, w, Math.max(0.01, len), 8]} />
+        <meshStandardMaterial color={col} emissive={col} emissiveIntensity={1.1} metalness={0.1} roughness={0.2} />
       </mesh>
+    )
+  }
+
+  function Impact({ p }: { p:[number,number,number] }) {
+    const pos = new THREE.Vector3().fromArray(p)
+    return (
+      <group position={[pos.x, pos.y, pos.z]}>
+        <mesh>
+          <sphereGeometry args={[0.08, 12, 12]} />
+          <meshStandardMaterial color="#fff7ae" emissive="#fff38a" emissiveIntensity={1.2} />
+        </mesh>
+      </group>
     )
   }
 
@@ -261,9 +289,9 @@ export default function FPSBattle({ gameId, apiBase, onUpdate }: Props) {
         const ev = e as unknown as MouseEvent
         const now = performance.now()
         if (now - (lockAtRef.current || 0) < 150) return
-        if (ev.button === 0) shoot()
+        if (ev.button === 0) { setIsFiring(true); shoot() }
         if (ev.button === 2) setAim(true)
-      }} onPointerUp={(e) => { if (locked && (e as any).button === 2) setAim(false) }}>
+      }} onPointerUp={(e) => { if (!locked) return; const b = (e as any).button; if (b === 2) setAim(false); if (b === 0) setIsFiring(false) }}>
         <color attach="background" args={[0.04,0.04,0.05]} />
         <ambientLight intensity={0.5} />
         <directionalLight position={[4,6,3]} intensity={0.8} castShadow />
@@ -273,30 +301,35 @@ export default function FPSBattle({ gameId, apiBase, onUpdate }: Props) {
           <capsuleGeometry args={[0.35, 0.8, 4, 12]} />
           <meshStandardMaterial color="#ef4444" />
         </mesh>
-        {/* weapon pickup: SCAR */}
-        {!hasWeapon && (
-          <group ref={weaponWorldRef as any} position={[1.2, 0.9, -1.6]} onPointerDown={() => setHasWeapon(true)}>
-            <mesh position={[0, -0.3, 0]} castShadow>
-              <boxGeometry args={[0.6, 0.3, 0.6]} />
-              <meshStandardMaterial color="#6b4423" />
-            </mesh>
-            <mesh rotation={[0, Math.PI/4, 0]} castShadow>
-              <boxGeometry args={[0.6, 0.06, 0.12]} />
-              <meshStandardMaterial color="#d1d5db" />
-            </mesh>
-            <mesh position={[0.2, -0.02, 0]} castShadow>
-              <boxGeometry args={[0.18, 0.08, 0.08]} />
-              <meshStandardMaterial color="#9ca3af" />
-            </mesh>
-          </group>
-        )}
+        {/* weapon pickup removed: always equipped */}
         {/* tracers */}
-        {tracers.map(t => <Tracer key={t.id} s={t.s} e={t.e} />)}
+        {tracers.map(t => <Tracer key={t.id} s={t.s} e={t.e} col={t.col} w={t.w} />)}
+        {impacts.map(im => <Impact key={im.id} p={im.p} />)}
         <PlayerController />
         <PointerLockControls onLock={() => { setLocked(true); lockAtRef.current = performance.now(); setAim(false) }} onUnlock={() => setLocked(false)} />
         <CameraZoom aim={aim} />
       </Canvas>
-      {/* HUD: minimal - distance + crosshair + hint */}
+      {/* HUD: HP bars + distance + crosshair + hint */}
+      {(() => {
+        const enemyHp = Number((minigame as any)?.enemy?.hp ?? 0)
+        const enemyMax = Number((minigame as any)?.enemy?.max_hp ?? Math.max(enemyHp, 1))
+        const playerHp = Number((minigame as any)?.player_hp ?? 0)
+        const enemyPct = Math.max(0, Math.min(100, Math.round((enemyHp / (enemyMax || 1)) * 100)))
+        return (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 w-[70%] max-w-2xl pointer-events-none">
+            <div className="flex flex-col gap-1">
+              <div className="text-white text-xs drop-shadow">ENEMY HP {enemyHp}/{enemyMax}</div>
+              <div className="w-full h-3 bg-white/20 rounded overflow-hidden">
+                <div className="h-3 bg-rose-500" style={{ width: `${enemyPct}%` }} />
+              </div>
+              <div className="text-white text-xs drop-shadow mt-2">PLAYER HP {playerHp}</div>
+              <div className="w-2/3 h-2 bg-white/20 rounded overflow-hidden">
+                <div className="h-2 bg-emerald-500" style={{ width: `${Math.max(0, Math.min(100, (playerHp || 0) * 100 / 10))}%` }} />
+              </div>
+            </div>
+          </div>
+        )
+      })()}
       <div className="absolute top-4 left-1/2 -translate-x-1/2 text-white text-sm select-none drop-shadow">
         霍晞屬 {Math.round(distance)} m
       </div>
@@ -317,12 +350,10 @@ export default function FPSBattle({ gameId, apiBase, onUpdate }: Props) {
       )}
       {!locked && (
         <div className="absolute inset-0 flex items-center justify-center">
-          <button className="px-4 py-2 rounded bg-white/90 text-slate-800 shadow pointer-events-auto">クリックで開始（WASD移動・左クリック攻撃・右クリックスコープ）</button>
+          <button className="px-4 py-2 rounded bg-white/90 text-slate-800 shadow pointer-events-auto">クリックで開始（WASD移動・左クリック連射・右クリックスコープ）</button>
         </div>
       )}
-      {!hasWeapon && nearWeapon && (
-        <div className="absolute bottom-16 left-1/2 -translate-x-1/2 bg-black/60 text-white px-3 py-1 rounded">武器『SCAR』を拾うには この場所でクリック</div>
-      )}
+      {/* 拾いヒントは削除（常時装備） */}
       {result && (
         <div className="absolute inset-0">
           {/* Result overlay from existing component */}
@@ -331,6 +362,7 @@ export default function FPSBattle({ gameId, apiBase, onUpdate }: Props) {
     </div>
   )
 }
+
 
 
 

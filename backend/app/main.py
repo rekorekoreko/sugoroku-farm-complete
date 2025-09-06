@@ -67,7 +67,7 @@ class GameState(BaseModel):
     crop_changes: Dict[str, int] = {}
     bazaar_offer_price: Optional[int] = None
     minigame: Optional[Dict[str, Any]] = None
-    # game-end (30 turns) summary
+    # game-end (60 turns) summary
     game_over: bool = False
     final_assets: Optional[Dict[str, int]] = None
     winner: Optional[str] = None
@@ -125,6 +125,56 @@ def get_crop_growth_time(tp: CropType) -> int:
 
 
 games: Dict[str, GameState] = {}
+
+
+def _finalize_game(game: GameState) -> List[str]:
+    """Compute final assets, set winner and game_over flags, and return event messages."""
+    def total_assets(p: Player) -> int:
+        coins = int(getattr(p, 'coins', 0))
+        stocks = int(getattr(p, 'stocks_shares', 0)) * int(getattr(game, 'stock_price', 0))
+        inv = 0
+        try:
+            for k, v in (getattr(p, 'inventory', {}) or {}).items():
+                inv += int(v) * int((getattr(game, 'crop_prices', {}) or {}).get(k, 0))
+        except Exception:
+            pass
+        return int(coins) + int(stocks) + int(inv)
+
+    totals: Dict[str, int] = {}
+    for p in game.players:
+        totals[p.id] = total_assets(p)
+
+    sorted_players = sorted(game.players, key=lambda x: totals.get(x.id, 0), reverse=True)
+    if len(sorted_players) >= 2 and totals.get(sorted_players[0].id, 0) == totals.get(sorted_players[1].id, 0):
+        win_name = "Draw"
+    else:
+        win_name = sorted_players[0].name if sorted_players else None
+
+    game.game_over = True
+    game.awaiting_action = False
+    game.final_assets = totals
+    game.winner = win_name
+
+    evs: List[str] = []
+    for p in game.players:
+        evs.append(f"Total assets {p.name}: {totals.get(p.id, 0)}")
+    if win_name:
+        evs.append(f"Winner: {win_name}")
+    return evs
+
+
+def _maybe_finalize_game(game: GameState, events: Optional[List[str]] = None):
+    """Finalize only when 60+ turns and no pending action/minigame."""
+    try:
+        if getattr(game, 'game_over', False):
+            return
+        if int(getattr(game, 'turn', 0)) >= 60 and not getattr(game, 'awaiting_action', False) and not getattr(game, 'minigame', None):
+            evs = _finalize_game(game)
+            if events is not None:
+                events.extend(evs)
+    except Exception:
+        # be resilient: never break the request on finalize logic
+        pass
 
 
 @app.get("/healthz")
@@ -237,33 +287,33 @@ async def roll_dice(game_id: str):
     if getattr(stop_sq, 'is_battle', False):
         if current.id != "bot":
             enemy_pool = [
-                {"name": "スライム", "hp": random.randint(8, 12), "atk_min": 1, "atk_max": 3},
-                {"name": "ゴブリン", "hp": random.randint(10, 14), "atk_min": 2, "atk_max": 4},
-                {"name": "オオカミ", "hp": random.randint(9, 13), "atk_min": 1, "atk_max": 4},
+                {"name": "スライム", "hp": 30, "atk_min": 1, "atk_max": 3},
+                {"name": "ゴブリン", "hp": 30, "atk_min": 2, "atk_max": 4},
+                {"name": "オオカミ", "hp": 30, "atk_min": 1, "atk_max": 4},
             ]
             foe = random.choice(enemy_pool)
             game.minigame = {
                 "type": "rpg",
                 "status": "countdown",
                 "player_id": current.id,
-                "player_hp": 12,
-                "enemy": {"name": foe["name"], "hp": foe["hp"], "max_hp": foe["hp"], "atk_min": foe["atk_min"], "atk_max": foe["atk_max"]},
+                "player_hp": 10,
+                "enemy": {"name": foe["name"], "hp": 30, "max_hp": 30, "atk_min": foe["atk_min"], "atk_max": foe["atk_max"]},
                 "created_turn": game.turn,
                 "log": [f"{foe['name']} が あらわれた！"],
             }
             events.append(f"バトル開始: {foe['name']} 出現！")
         else:
             # bot auto resolve
-            enemy_hp = random.randint(8, 12)
-            player_hp = 12
+            enemy_hp = 30
+            player_hp = 10
             while enemy_hp > 0 and player_hp > 0:
                 enemy_hp -= random.randint(3, 6)
                 if enemy_hp <= 0:
                     break
                 player_hp -= random.randint(1, 4)
             if enemy_hp <= 0:
-                current.coins += 40
-                events.append("BOTは野良モンスターを倒した！（+40コイン）")
+                current.coins += 100
+                events.append("BOTは野良モンスターを倒した！（+100コイン）")
             else:
                 loss = min(current.coins, 20)
                 current.coins -= loss
@@ -273,13 +323,15 @@ async def roll_dice(game_id: str):
     stop_sq = game.board[current.position]
     if getattr(stop_sq, 'is_mine', False):
         if current.id != "bot":
+            # Minecraft-like distribution: many dirt/stone, rare gems
             kinds = [
                 ("diamond", 50, 2),
                 ("emerald", 40, 3),
                 ("sapphire", 30, 4),
-                ("topaz", 20, 5),
-                ("iron", 10, 8),
-                ("stone", 0, 24),
+                ("topaz", 20, 6),
+                ("iron", 10, 18),
+                ("stone", 0, 36),
+                ("dirt", 0, 50),
             ]
             field: List[Dict[str, Any]] = []
             bid = 0
@@ -295,7 +347,8 @@ async def roll_dice(game_id: str):
                 "created_turn": game.turn,
                 "score": 0,
                 "field": field,
-                "time_limit": 60,
+                "time_limit": 30,
+                "bot_score": 0,
             }
             events.append("採掘ミニゲーム: ブロックを掘ってスコアを稼ごう！")
         else:
@@ -377,8 +430,8 @@ async def roll_dice(game_id: str):
         # human action phase
         game.awaiting_action = True
 
-    # 30-turn settlement: compute total assets and declare winner
-    if game.turn >= 30:
+    # 60-turn settlement: compute total assets and declare winner
+    if False and game.turn >= 60:
         def total_assets(p: Player) -> int:
             coins = p.coins
             stocks = getattr(p, 'stocks_shares', 0) * game.stock_price
@@ -406,6 +459,9 @@ async def roll_dice(game_id: str):
         game.awaiting_action = False
         game.final_assets = totals
         game.winner = win_name
+
+    # 60ターン到達時の決算は、イベントやミニゲームの処理完了後に行う
+    _maybe_finalize_game(game, events)
 
     # Always return the dice rolled for this call so clients can animate correctly
     return {"game_state": game, "events": events, "dice_value": dice}
@@ -489,6 +545,7 @@ async def end_turn(game_id: str):
     game.awaiting_action = False
     game.bazaar_offer_price = None
     game.current_player = (game.current_player + 1) % len(game.players)
+    _maybe_finalize_game(game)
     return {"message": "Turn ended", "game_state": game}
 
 
@@ -552,6 +609,7 @@ async def minigame_resolve(game_id: str, winner: str = "attacker"):
         if attacker:
             events.append(f"{attacker.name}: 作物マスを奪えなかった……")
     game.minigame = None
+    _maybe_finalize_game(game, events)
     return {"message": "minigame resolved", "game_state": game, "events": events}
 
 
@@ -577,11 +635,12 @@ async def rpg_minigame_act(game_id: str, action: str = "attack"):
     log.append(f"あなたの攻撃！ {dmg} ダメージ")
     if mg["enemy"]["hp"] <= 0:
         # victory
-        p.coins += 50
+        p.coins += 100
         game.minigame = None
         # end action phase and pass turn to next player
         game.awaiting_action = False
         game.current_player = (game.current_player + 1) % len(game.players)
+        _maybe_finalize_game(game)
         return {"message": "victory", "game_state": game}
 
     # enemy counterattack
@@ -597,6 +656,7 @@ async def rpg_minigame_act(game_id: str, action: str = "attack"):
         game.minigame = None
         game.awaiting_action = False
         game.current_player = (game.current_player + 1) % len(game.players)
+        _maybe_finalize_game(game)
         return {"message": "defeat", "game_state": game}
 
     # continue playing
@@ -631,6 +691,14 @@ async def hybrid_minigame_start(game_id: str):
         "created_turn": game.turn,
         "log": [f"{foe['name']} が あらわれた！"],
     }
+    # enforce HP settings: player=10, enemy=30
+    try:
+        game.minigame["player_hp"] = 10
+        if isinstance(game.minigame.get("enemy"), dict):
+            game.minigame["enemy"]["hp"] = 30
+            game.minigame["enemy"]["max_hp"] = 30
+    except Exception:
+        pass
     return {"message": "hybrid ready", "game_state": game, "minigame": game.minigame}
 
 
@@ -681,10 +749,11 @@ async def hybrid_minigame_command(game_id: str, action: str = "attack"):
 
     # check victory
     if int(enemy["hp"]) <= 0:
-        p.coins += 50
+        p.coins += 100
         game.minigame = None
         game.awaiting_action = False
         game.current_player = (game.current_player + 1) % len(game.players)
+        _maybe_finalize_game(game)
         return {"message": "victory", "game_state": game}
 
     # enemy's turn (dodge-aware AI)
@@ -722,6 +791,7 @@ async def hybrid_minigame_command(game_id: str, action: str = "attack"):
         game.minigame = None
         game.awaiting_action = False
         game.current_player = (game.current_player + 1) % len(game.players)
+        _maybe_finalize_game(game)
         return {"message": "defeat", "game_state": game}
 
     mg["status"] = "moving"
@@ -755,6 +825,25 @@ async def mining_dig(game_id: str, block_id: int):
     return {"message": "dug", "gained": val, "game_state": game, "minigame": mg}
 
 
+@app.post("/game/{game_id}/minigame/mining/bot-dig")
+async def mining_bot_dig(game_id: str):
+    if game_id not in games:
+        raise HTTPException(status_code=404, detail="Game not found")
+    game = games[game_id]
+    mg = game.minigame
+    if not mg or mg.get("type") != "mining":
+        raise HTTPException(status_code=404, detail="No mining minigame")
+    # pick a random unmined block and mine for bot
+    pool = [b for b in (mg.get("field") or []) if not b.get("mined")]
+    if not pool:
+        return {"message": "no blocks", "game_state": game, "minigame": mg}
+    b = random.choice(pool)
+    b["mined"] = True
+    val = int(b.get("value", 0))
+    mg["bot_score"] = int(mg.get("bot_score", 0)) + val
+    return {"message": "bot dug", "gained": val, "game_state": game, "minigame": mg}
+
+
 @app.post("/game/{game_id}/minigame/mining/finish")
 async def mining_finish(game_id: str):
     if game_id not in games:
@@ -766,10 +855,26 @@ async def mining_finish(game_id: str):
     # clear minigame and pass to next player; coins unaffected
     score = int(mg.get("score", 0))
     player_name = next((pl.name for pl in game.players if pl.id == mg.get("player_id")), None)
-    events = [f"採掘終了: {player_name or 'Player'} のスコア {score}"]
+        # BOT競争スコア（未設定時は擬似計算）
+    score = int(mg.get("score", 0))
+    try:
+        bot_score = int(mg.get("bot_score", 0))
+    except Exception:
+        bot_score = 0
+    if bot_score <= 0:
+        import random
+        bot_score = random.randint(120, 260)
+    player_name = next((pl.name for pl in game.players if pl.id == mg.get("player_id")), None)
+    winner = 'BOT' if bot_score > score else (player_name or 'Player') if score > bot_score else '引き分け'
+    events = [
+        f"採掘終了: {player_name or 'Player'} のスコア {score}",
+        f"採掘終了: BOT のスコア {bot_score}",
+        f"勝者: {winner}",
+    ]
     game.minigame = None
     game.awaiting_action = False
     game.current_player = (game.current_player + 1) % len(game.players)
+    _maybe_finalize_game(game, events)
     return {"message": "mining finished", "game_state": game, "events": events}
 
 @app.post("/game/{game_id}/next-stage")
@@ -816,6 +921,7 @@ async def plant_crop(game_id: str, crop_type: CropType):
     # consume action -> to next player
     game.awaiting_action = False
     game.current_player = (game.current_player + 1) % len(game.players)
+    _maybe_finalize_game(game)
     return {"message": "planted", "game_state": game}
 
 
@@ -836,6 +942,7 @@ async def harvest_crop(game_id: str):
     sq.owner = None
     game.awaiting_action = False
     game.current_player = (game.current_player + 1) % len(game.players)
+    _maybe_finalize_game(game)
     return {"message": "harvested", "harvested_qty": qty, "game_state": game}
 
 
@@ -915,6 +1022,9 @@ async def build_estate(game_id: str, target_square_id: int):
         raise HTTPException(status_code=400, detail="Not enough coins")
     p.coins -= 500
     tgt.building_owner = p.id
+    _maybe_finalize_game(game)
     return {"message": "built", "game_state": game}
+
+
 
 

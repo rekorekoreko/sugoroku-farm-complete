@@ -25,8 +25,8 @@ export default function BattleRPG({ minigame, onAttack }: Props) {
         <div className="grid grid-cols-2 gap-4 items-center">
           <div>
             <div className="text-sm text-gray-600">プレイヤー</div>
-            {bar(playerHp, 12, 'bg-green-500')}
-            <div className="text-xs text-gray-500 mt-1">HP {playerHp} / 12</div>
+            {bar(playerHp, 10, 'bg-green-500')}
+            <div className="text-xs text-gray-500 mt-1">HP {playerHp} / 10</div>
           </div>
           <div className="text-right">
             <div className="text-sm text-gray-600">{enemy.name}</div>
@@ -50,4 +50,3 @@ export default function BattleRPG({ minigame, onAttack }: Props) {
     </div>
   )
 }
-
